@@ -8,6 +8,8 @@ const SHAPE_COUNT = 8;
 const SLACK_REF = 250;
 /** Gap between a tile's border and the first chain shape. */
 const TILE_GAP = 14;
+/** Nominal rope length: chains shorter than this sag; longer ones pull flat. */
+const REST_LENGTH = 480;
 
 /** Human-facing chip text — often clearer than the raw type name. */
 const CHIP_LABEL: Record<LinkType, string> = {
@@ -138,25 +140,41 @@ export class Chain {
     const usable = Math.max(dist - trimA - trimB, 8);
     const startX = a.x + ux * trimA;
     const startY = a.y + uy * trimA;
+    const endX = startX + ux * usable;
+    const endY = startY + uy * usable;
+
+    // The chain hangs like a slack rope: a quadratic Bézier whose control point drops
+    // toward screen-down. Short chains (tiles close together) sag deeply; as the chain
+    // stretches toward REST_LENGTH it pulls taut and flattens out. The control point
+    // sits 2× the desired sag below the midpoint (a quadratic passes halfway to it).
+    const sag = Phaser.Math.Clamp((REST_LENGTH - usable) * 0.22, 3, 52);
+    const curve = new Phaser.Curves.QuadraticBezier(
+      new Phaser.Math.Vector2(startX, startY),
+      new Phaser.Math.Vector2((startX + endX) / 2, (startY + endY) / 2 + sag * 2),
+      new Phaser.Math.Vector2(endX, endY)
+    );
 
     // Wobble amplitude fades as the chain is stretched taut.
     const slack = Phaser.Math.Clamp(SLACK_REF / usable, 0.2, 1);
-    const px = -uy; // perpendicular
-    const py = ux;
-    const heading = Math.atan2(dy, dx);
     const t = time * 0.001;
 
     for (let i = 0; i < SHAPE_COUNT; i++) {
       const img = this.shapes[i]!;
       const phase = this.phases[i]!;
       const wobbleSpeed = this.wobbleSpeeds[i]!;
-      const along = ((i + 0.5) / SHAPE_COUNT) * usable;
+
+      // getPointAt/getTangentAt are arc-length parameterized, so the shapes stay
+      // evenly spaced however deeply the curve bows.
+      const u = (i + 0.5) / SHAPE_COUNT;
+      const pos = curve.getPointAt(u);
+      const tan = curve.getTangentAt(u);
       const wobble = Math.sin(t * wobbleSpeed + phase) * this.amps[i]! * slack;
-      img.setPosition(startX + ux * along + px * wobble, startY + uy * along + py * wobble);
+      img.setPosition(pos.x - tan.y * wobble, pos.y + tan.x * wobble);
 
       const shimmy = Math.sin(t * wobbleSpeed + phase);
       if (DIRECTIONAL.has(this.type)) {
-        img.rotation = heading + shimmy * 0.12; // glyph points from A toward B
+        // Glyph follows the local curve direction (A toward B), riding the sag.
+        img.rotation = Math.atan2(tan.y, tan.x) + shimmy * 0.12;
       } else if (UPRIGHT.has(this.type)) {
         img.rotation = shimmy * 0.14; // stays readable, just a gentle rock
       } else if (this.type === 'meronym') {
@@ -171,8 +189,9 @@ export class Chain {
     const shapeAlpha = Phaser.Math.Clamp((usable - 24) / 60, 0, 1);
     for (const img of this.shapes) img.setAlpha(shapeAlpha);
 
-    // Label chip rides the midpoint with a gentle sway.
-    this.chip.setPosition(startX + ux * usable * 0.5, startY + uy * usable * 0.5);
+    // Label chip rides the lowest point of the sag with a gentle sway.
+    const mid = curve.getPointAt(0.5);
+    this.chip.setPosition(mid.x, mid.y);
     this.chip.rotation = Math.sin(t * 0.9) * 0.035;
     this.chip.setAlpha(Phaser.Math.Clamp((usable - 60) / 80, 0, 1));
   }

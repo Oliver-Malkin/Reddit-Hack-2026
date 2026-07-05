@@ -10,12 +10,16 @@ const EDGE_BAND = 14; // px from the edge that counts as "border" (drag zone) on
 const MOVE_THRESHOLD = 6; // px of pointer travel before a press becomes a drag
 const LONG_PRESS_MS = 280; // hold this long on the center to drag an editable tile
 
-/** The scene owns focus + z-order; the tile calls back through this. */
+export type TileFxName = 'tap' | 'erase' | 'grab' | 'drop' | 'wrong' | 'win';
+
+/** The scene owns focus, z-order, sound, and win state; the tile calls back through this. */
 export type TileHost = {
   focusTile(tile: WordTile, localX: number): void;
   clearFocus(): void;
   beginTileDrag(tile: WordTile): void;
   endTileDrag(tile: WordTile): void;
+  tileSolved(tile: WordTile): void;
+  playFx(name: TileFxName): void;
 };
 
 type Mode = 'idle' | 'pendingDrag' | 'pendingTap' | 'dragging';
@@ -63,7 +67,6 @@ export class WordTile extends Phaser.GameObjects.Container {
   private downLocalX = 0;
   private grabbed = false;
   private tilt = 0;
-  private easeEnabled = true;
   // Long-press is timed in tick() off the frame delta rather than scene.time.delayedCall
   // (that timer proved unreliable here), reusing the same clock the drag-smoothing runs on.
   private holdElapsed = 0;
@@ -220,6 +223,7 @@ export class WordTile extends Phaser.GameObjects.Container {
     this.targetY = this.y;
     this.setDepth(50);
     this.host.beginTileDrag(this);
+    this.host.playFx('grab');
     this.scene.tweens.killTweensOf(this);
     this.scene.tweens.add({ targets: this, scaleX: 1.045, scaleY: 0.93, duration: 110, ease: 'Quad.easeOut' });
   }
@@ -228,8 +232,16 @@ export class WordTile extends Phaser.GameObjects.Container {
     this.grabbed = false;
     this.setDepth(this.solved ? 12 : 10);
     this.host.endTileDrag(this);
+    this.host.playFx('drop');
     this.scene.tweens.killTweensOf(this);
     this.scene.tweens.add({ targets: this, scaleX: 1, scaleY: 1, duration: 300, ease: 'Back.easeOut' });
+  }
+
+  /** Home position for layout — the smoothed follow glides the tile there. */
+  setHome(x: number, y: number) {
+    if (this.mode === 'dragging') return;
+    this.targetX = x;
+    this.targetY = y;
   }
 
   // ---------- FOCUS + TYPING ----------
@@ -237,10 +249,13 @@ export class WordTile extends Phaser.GameObjects.Container {
   focus(localX: number) {
     if (!this.editable) return;
     this.focused = true;
-    // Snap to the leftmost empty cell (so typing just flows); if the word is already
-    // full, drop the caret on the cell the player actually tapped so they can fix it.
-    const empty = this.slots.findIndex((s) => s === '');
-    this.caretIndex = empty >= 0 ? empty : this.cellFromLocalX(localX);
+    // Caret lands on the tapped cell, but never past the first empty one — so a fresh
+    // tap on an empty word starts at cell 0, tapping ahead of your progress snaps back
+    // to where typing continues, and tapping a filled cell (or any cell once the word
+    // is full) lets you go straight there to fix it. No gaps, no surprises.
+    const tapped = this.cellFromLocalX(localX);
+    const firstEmpty = this.slots.findIndex((s) => s === '');
+    this.caretIndex = firstEmpty === -1 ? tapped : Math.min(tapped, firstEmpty);
     this.caretBlink = 0;
     this.blinkOn = true;
     this.renderCells();
@@ -264,21 +279,25 @@ export class WordTile extends Phaser.GameObjects.Container {
     const key = event.key;
 
     if (/^[a-zA-Z]$/.test(key)) {
-      if (this.caretIndex < n) {
-        this.slots[this.caretIndex] = key.toUpperCase();
-        this.caretIndex = Math.min(this.caretIndex + 1, n); // n === "past the end"
-      }
+      // Overwrite the current cell and step right (parking on the last cell when full).
+      this.slots[this.caretIndex] = key.toUpperCase();
+      this.caretIndex = Math.min(this.caretIndex + 1, n - 1);
+      this.host.playFx('tap');
     } else if (key === 'Backspace') {
       event.preventDefault();
-      if (this.caretIndex > 0) {
+      // Delete what's in the current cell if there is anything; only when it's already
+      // empty does it step back and clear the previous cell. This matches what you'd
+      // expect whether you're backspacing a run of letters or fixing a single tapped one.
+      if (this.slots[this.caretIndex]) {
+        this.slots[this.caretIndex] = '';
+      } else if (this.caretIndex > 0) {
         this.caretIndex--;
         this.slots[this.caretIndex] = '';
-      } else {
-        this.slots[0] = '';
       }
+      this.host.playFx('erase');
     } else if (key === 'Delete') {
-      const i = Math.min(this.caretIndex, n - 1);
-      if (i >= 0) this.slots[i] = '';
+      this.slots[this.caretIndex] = '';
+      this.host.playFx('erase');
     } else if (key === 'ArrowLeft') {
       this.caretIndex = Math.max(0, Math.min(this.caretIndex, n - 1) - 1);
     } else if (key === 'ArrowRight') {
@@ -302,12 +321,18 @@ export class WordTile extends Phaser.GameObjects.Container {
 
   private checkFull() {
     const full = this.slots.every((s) => s !== '');
-    if (full && !this.announcedFull) {
-      this.announcedFull = true;
-      if (this.slots.join('') === this.answer) this.solve();
-      else this.flashWrong();
-    } else if (!full) {
+    if (!full) {
       this.announcedFull = false;
+      return;
+    }
+    // A correct word always wins — even if the player fixed the last letter in place on
+    // an already-full guess (which never dips back to non-full). The wrong-answer buzz,
+    // by contrast, fires only once per fill so overwriting wrong→wrong doesn't spam it.
+    if (this.slots.join('') === this.answer) {
+      this.solve();
+    } else if (!this.announcedFull) {
+      this.announcedFull = true;
+      this.flashWrong();
     }
   }
 
@@ -318,6 +343,27 @@ export class WordTile extends Phaser.GameObjects.Container {
     this.host.clearFocus();
     this.setDepth(12);
     this.renderCells();
+
+    // Cells flip green with a left-to-right staggered pop (they're already green from
+    // renderCells; reset to ink so each one visibly flips as its pop lands).
+    this.cellTexts.forEach((cell, i) => {
+      cell.setColor('#1c1c1c');
+      this.scene.tweens.add({
+        targets: cell,
+        scaleX: 1.35,
+        scaleY: 1.35,
+        yoyo: true,
+        duration: 120,
+        delay: i * 60,
+        ease: 'Quad.easeOut',
+        onStart: () => cell.setColor('#27ae60'),
+      });
+    });
+
+    // Whole-tile pop. (No glow filter here: enableFilters() renders the container to a
+    // bounds-sized texture, which crops the thick border stroke that overflows those
+    // bounds — leaving a permanently thin border. The staggered green flip, confetti,
+    // and camera flash carry the celebration without touching the renderer.)
     this.scene.tweens.add({
       targets: this,
       scaleX: 1.08,
@@ -326,27 +372,24 @@ export class WordTile extends Phaser.GameObjects.Container {
       duration: 160,
       ease: 'Quad.easeOut',
     });
+
+    this.host.playFx('win');
+    this.host.tileSolved(this);
   }
 
   private flashWrong() {
-    // Brief horizontal shake — freeze the follow-easing so it doesn't fight the tween.
-    const ox = this.targetX;
-    this.easeEnabled = false;
-    this.scene.tweens.add({
-      targets: this,
-      x: { from: ox - 6, to: ox + 6 },
-      yoyo: true,
-      repeat: 3,
-      duration: 55,
-      ease: 'Sine.easeInOut',
-      onComplete: () => {
-        this.x = ox;
-        this.targetX = ox;
-        this.easeEnabled = true;
-      },
-    });
+    // The puzzle layer's camera does the shaking (background scene stays calm) —
+    // this replaces a hand-rolled x-position tween that fought the drag smoothing.
+    const cam = this.scene.cameras.main;
+    cam.shake(180, 0.006);
+    this.host.playFx('wrong');
     this.renderCells(true);
-    this.scene.time.delayedCall(480, () => this.renderCells());
+    this.scene.tweens.addCounter({
+      from: 0,
+      to: 1,
+      duration: 480,
+      onComplete: () => this.renderCells(),
+    });
   }
 
   private renderCells(wrong = false) {
@@ -365,21 +408,35 @@ export class WordTile extends Phaser.GameObjects.Container {
         t.setText('');
       }
     }
-    this.drawCaret();
+    this.drawInputChrome();
   }
 
-  private drawCaret() {
+  private drawInputChrome() {
     const g = this.caretGfx;
     g.clear();
-    if (!this.focused || this.caretIndex < 0 || this.caretIndex >= this.slots.length) return;
+    // Only the unsolved answer tile gets input chrome; clue and solved tiles are plain.
+    if (!this.editable) return;
+
     const w = this.boxWidth;
     const h = this.boxHeight;
-    const cellLeft = -w / 2 + BORDER + this.caretIndex * CELL_W;
-    g.fillStyle(PALETTE.yellow, 0.2);
-    g.fillRoundedRect(cellLeft + 3, -h / 2 + 5, CELL_W - 6, h - 10, 6);
-    if (this.blinkOn) {
-      g.fillStyle(PALETTE.ink, 0.9);
-      g.fillRoundedRect(cellLeft + 9, h / 2 - 14, CELL_W - 18, 3, 1.5);
+    const uy = h / 2 - 11; // underline baseline
+
+    for (let i = 0; i < this.slots.length; i++) {
+      const cellLeft = -w / 2 + BORDER + i * CELL_W;
+      const isCaret = this.focused && i === this.caretIndex;
+
+      // Focus highlight box behind the active cell.
+      if (isCaret) {
+        g.fillStyle(PALETTE.yellow, 0.22);
+        g.fillRoundedRect(cellLeft + 3, -h / 2 + 5, CELL_W - 6, h - 10, 6);
+      }
+
+      // Persistent pink "fill-in-the-blank" underline on every cell — the always-on
+      // signal that this box still needs solving, even once it's full of letters. The
+      // active cell's underline blinks to ink to double as the caret.
+      const caretBlink = isCaret && this.blinkOn;
+      g.fillStyle(caretBlink ? PALETTE.ink : PALETTE.pink, caretBlink ? 0.9 : 0.75);
+      g.fillRoundedRect(cellLeft + 8, uy, CELL_W - 16, 3, 1.5);
     }
   }
 
@@ -398,20 +455,18 @@ export class WordTile extends Phaser.GameObjects.Container {
       const on = this.caretBlink % 1000 < 550;
       if (on !== this.blinkOn) {
         this.blinkOn = on;
-        this.drawCaret();
+        this.drawInputChrome();
       }
     }
 
-    if (this.easeEnabled) {
-      const k = 1 - Math.exp(-delta / 55);
-      const prevX = this.x;
-      this.x += (this.targetX - this.x) * k;
-      this.y += (this.targetY - this.y) * k;
+    const k = 1 - Math.exp(-delta / 55);
+    const prevX = this.x;
+    this.x += (this.targetX - this.x) * k;
+    this.y += (this.targetY - this.y) * k;
 
-      const vx = (this.x - prevX) / Math.max(delta, 1);
-      const targetTilt = this.grabbed ? Phaser.Math.Clamp(vx * 0.05, -0.055, 0.055) : 0;
-      this.tilt += (targetTilt - this.tilt) * (1 - Math.exp(-delta / 90));
-      this.rotation = this.tilt;
-    }
+    const vx = (this.x - prevX) / Math.max(delta, 1);
+    const targetTilt = this.grabbed ? Phaser.Math.Clamp(vx * 0.05, -0.055, 0.055) : 0;
+    this.tilt += (targetTilt - this.tilt) * (1 - Math.exp(-delta / 90));
+    this.rotation = this.tilt;
   }
 }
