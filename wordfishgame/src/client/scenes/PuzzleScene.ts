@@ -11,9 +11,13 @@ import { activePuzzle } from '../puzzle/puzzles';
 import { galleryRows } from '../puzzle/gallery';
 import type { Puzzle } from '../puzzle/types';
 import { PALETTE } from '../theme';
+import { debugEnabled, perf } from '../debug';
 
 /** 'gallery' shows one row per link type for design review; 'puzzle' plays activePuzzle. */
 const MODE: 'gallery' | 'puzzle' = 'puzzle';
+
+/** When the debug HUD is on, attribute per-frame time to tiles vs. chains. */
+const PERF = debugEnabled();
 
 /** Minimum gap between a tile's edge and the canvas edge. */
 const LAYOUT_MARGIN = 12;
@@ -427,7 +431,18 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
   }
 
   override update(time: number, delta: number) {
+    if (!PERF) {
+      for (const tile of this.tileList) tile.tick(delta);
+      for (const chain of this.chains) chain.update(time);
+      return;
+    }
+    // Debug-only: attribute frame time to tiles vs. chains for the HUD.
+    const t0 = performance.now();
     for (const tile of this.tileList) tile.tick(delta);
+    const t1 = performance.now();
     for (const chain of this.chains) chain.update(time);
+    const t2 = performance.now();
+    perf.tilesMs = t1 - t0;
+    perf.chainsMs = t2 - t1;
   }
 }

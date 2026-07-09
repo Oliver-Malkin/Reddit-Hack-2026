@@ -7,6 +7,9 @@ export default defineConfig(({ command }) => {
   if (command === 'serve') {
     return {
       plugins: [],
+      server: {
+        host: true,
+      },
     };
   }
 

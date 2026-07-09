@@ -7,7 +7,12 @@ body {
 
 #app {
   width: 100%;
+  /* 100vh is the *large* mobile viewport (measured with the browser chrome retracted),
+     so it extends behind Firefox's bottom nav / Chrome's toolbar and hides the on-screen
+     keyboard. dvh tracks the *visible* area, keeping the whole canvas — keyboard included
+     — on screen. vh stays as the fallback for anything that doesn't support dvh. */
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 

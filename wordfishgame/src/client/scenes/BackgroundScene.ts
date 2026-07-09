@@ -1,5 +1,9 @@
 import Phaser from 'phaser';
 import { PALETTE, cssColor } from '../theme';
+import { debugEnabled, perf } from '../debug';
+
+/** When the debug HUD is on, time this scene's per-frame update for the HUD. */
+const PERF = debugEnabled();
 
 const FOREGROUND_COLORS = [
   PALETTE.pink,
@@ -650,6 +654,7 @@ export class BackgroundScene extends Phaser.Scene {
   // ---------- UPDATE LOOP ----------
 
   override update(_time: number, delta: number) {
+    const started = PERF ? performance.now() : 0;
     const gridSpeed = 0.03;
     this.grid.tilePositionX += gridSpeed * delta;
     this.grid.tilePositionY += gridSpeed * delta;
@@ -680,5 +685,7 @@ export class BackgroundScene extends Phaser.Scene {
         this.respawnShape(shape);
       }
     }
+
+    if (PERF) perf.bgMs = performance.now() - started;
   }
 }

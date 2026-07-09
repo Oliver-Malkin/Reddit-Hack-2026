@@ -13,7 +13,9 @@
   flex-direction: column;
   justify-content: center;
   align-items: center;
+  /* dvh tracks the visible viewport (excludes mobile browser chrome); vh is the fallback. */
   height: 100vh;
+  height: 100dvh;
   margin: 0;
   gap: 16px;
 }

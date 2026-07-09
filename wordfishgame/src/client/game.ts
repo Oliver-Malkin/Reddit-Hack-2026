@@ -2,6 +2,7 @@ import * as Phaser from 'phaser';
 import { AUTO, Game } from 'phaser';
 import { BackgroundScene } from './scenes/BackgroundScene';
 import { PuzzleScene } from './scenes/PuzzleScene';
+import { debugEnabled, mountDebugPanel } from './debug';
 
 // The Memphis-styled background scene auto-starts and launches the interactive puzzle
 // layer on top of itself.
@@ -32,4 +33,5 @@ const StartGame = (parent: string) => {
 
 document.addEventListener('DOMContentLoaded', () => {
   window.__game = StartGame('game-container');
+  if (debugEnabled()) mountDebugPanel(window.__game);
 });

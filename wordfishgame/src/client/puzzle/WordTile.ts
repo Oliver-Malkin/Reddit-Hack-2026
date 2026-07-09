@@ -6,9 +6,7 @@ const CELL_H = 58;
 const RADIUS = 10;
 const BORDER = 5;
 const SHADOW_OFFSET = 6;
-const EDGE_BAND = 14; // px from the edge that counts as "border" (drag zone) on editable tiles
 const MOVE_THRESHOLD = 6; // px of pointer travel before a press becomes a drag
-const LONG_PRESS_MS = 280; // hold this long on the center to drag an editable tile
 
 export type TileFxName = 'tap' | 'erase' | 'grab' | 'drop' | 'wrong' | 'win';
 
@@ -22,16 +20,20 @@ export type TileHost = {
   playFx(name: TileFxName): void;
 };
 
-type Mode = 'idle' | 'pendingDrag' | 'pendingTap' | 'dragging';
+type Mode = 'idle' | 'pending' | 'dragging';
 
 /**
  * A draggable word made of letter boxes: white cells, thick ink border, offset shadow.
  *
  * Two kinds:
- *  - a fixed clue word (drag from anywhere), and
- *  - the hidden answer, whose cells the player types into. On a hidden tile the CENTER
- *    is the text field (tap to type) and the BORDER is the drag handle; a long-press
- *    anywhere also starts a drag. This keeps "type here" and "move me" from fighting.
+ *  - a fixed clue word, and
+ *  - the hidden answer, whose cells the player types into.
+ *
+ * Both drag from anywhere on the tile. Drag vs. type is disambiguated by MOTION, not
+ * region (which is what touch users expect): press-and-move past MOVE_THRESHOLD starts a
+ * drag; a press that releases without moving is a tap — which on the answer tile focuses
+ * it for typing. So the whole tile is one big drag handle and one big "tap to type" zone
+ * at once, with no thin border band or long-press to fight.
  *
  * Drag feel: squish on grab, exponentially-smoothed follow (~55 ms — soft but still
  * responsive), and a slight velocity tilt.
@@ -70,9 +72,6 @@ export class WordTile extends Phaser.GameObjects.Container {
   private downLocalX = 0;
   private grabbed = false;
   private tilt = 0;
-  // Long-press is timed in tick() off the frame delta rather than scene.time.delayedCall
-  // (that timer proved unreliable here), reusing the same clock the drag-smoothing runs on.
-  private holdElapsed = 0;
 
   constructor(
     scene: Phaser.Scene,
@@ -185,31 +184,17 @@ export class WordTile extends Phaser.GameObjects.Container {
     this.downY = pointer.y;
     // Local coords (rotation is ~0, so dividing out scale is close enough).
     this.downLocalX = (pointer.x - this.x) / (this.scaleX || 1);
-    const localY = (pointer.y - this.y) / (this.scaleY || 1);
-    this.holdElapsed = 0;
-
-    if (!this.editable) {
-      this.mode = 'pendingDrag'; // fixed / solved tiles drag from anywhere
-      return;
-    }
-
-    const w = this.boxWidth;
-    const h = this.boxHeight;
-    const nearEdge =
-      Math.abs(this.downLocalX) > w / 2 - EDGE_BAND || Math.abs(localY) > h / 2 - EDGE_BAND;
-    // border = drag handle; center = text field (hold LONG_PRESS_MS to drag — see tick()).
-    this.mode = nearEdge ? 'pendingDrag' : 'pendingTap';
+    // Every tile starts pending: it becomes a drag if the pointer travels, or a tap if
+    // it's released in place. No region test — the whole surface does both jobs.
+    this.mode = 'pending';
   }
 
   pointerMove(pointer: Phaser.Input.Pointer) {
     if (this.mode === 'idle') return;
     const moved = Math.hypot(pointer.x - this.downX, pointer.y - this.downY);
 
-    if (this.mode === 'pendingDrag' && moved > MOVE_THRESHOLD) {
+    if (this.mode === 'pending' && moved > MOVE_THRESHOLD) {
       this.startDrag(pointer);
-    } else if (this.mode === 'pendingTap' && moved > MOVE_THRESHOLD) {
-      // A quick drag from the center is neither type nor move — cancel it.
-      this.mode = 'idle';
     }
 
     if (this.mode === 'dragging') {
@@ -222,8 +207,8 @@ export class WordTile extends Phaser.GameObjects.Container {
     const moved = Math.hypot(pointer.x - this.downX, pointer.y - this.downY);
     if (this.mode === 'dragging') {
       this.endDrag();
-    } else if (this.mode === 'pendingTap' && moved <= MOVE_THRESHOLD) {
-      this.host.focusTile(this, this.downLocalX); // tap the center → type
+    } else if (this.mode === 'pending' && moved <= MOVE_THRESHOLD && this.editable) {
+      this.host.focusTile(this, this.downLocalX); // tap in place → type
     }
     this.mode = 'idle';
   }
@@ -468,13 +453,6 @@ export class WordTile extends Phaser.GameObjects.Container {
   // ---------- FRAME TICK (called by the scene) ----------
 
   tick(delta: number) {
-    // Long-press on an editable tile's center → drag. Timed off the frame delta so it
-    // rides the same clock as everything else here.
-    if (this.mode === 'pendingTap') {
-      this.holdElapsed += delta;
-      if (this.holdElapsed >= LONG_PRESS_MS) this.startDrag(this.scene.input.activePointer);
-    }
-
     if (this.focused) {
       this.caretBlink += delta;
       const on = this.caretBlink % 1000 < 550;
