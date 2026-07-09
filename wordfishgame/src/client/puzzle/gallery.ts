@@ -18,6 +18,6 @@ export const galleryRows: GalleryRow[] = [
   { type: 'anagram', left: 'LISTEN', right: 'SILENT' },
   { type: 'meronym', left: 'PETAL', right: 'FLOWER' }, // PETAL is part of FLOWER
   { type: 'lettersubset', left: 'CLAM', right: 'ACCLAIM' }, // C-L-A-M hide inside ACCLAIM
-  { type: 'sequence', left: 'ACORN', right: 'TREE' }, // ACORN grows into TREE
+  { type: 'sequence', left: 'TADPOLE', right: 'FROG' }, // TADPOLE grows into FROG
   { type: 'rhyme', left: 'MOON', right: 'SPOON' },
 ];

@@ -2,6 +2,9 @@ import * as Phaser from 'phaser';
 import { WordTile } from '../puzzle/WordTile';
 import type { TileFxName, TileHost } from '../puzzle/WordTile';
 import { Chain } from '../puzzle/Chain';
+import { OnScreenKeyboard } from '../puzzle/Keyboard';
+import { IconButton } from '../puzzle/IconButton';
+import { HelpPopup } from '../puzzle/HelpPopup';
 import { SoundFx } from '../puzzle/SoundFx';
 import { WinPopup } from '../puzzle/WinPopup';
 import { activePuzzle } from '../puzzle/puzzles';
@@ -12,7 +15,8 @@ import { PALETTE } from '../theme';
 /** 'gallery' shows one row per link type for design review; 'puzzle' plays activePuzzle. */
 const MODE: 'gallery' | 'puzzle' = 'puzzle';
 
-type TileLayout = { tile: WordTile; fx: number; fy: number };
+/** Minimum gap between a tile's edge and the canvas edge. */
+const LAYOUT_MARGIN = 12;
 
 /**
  * Interactive puzzle layer — runs on top of BackgroundScene. Owns the word tiles,
@@ -23,13 +27,18 @@ type TileLayout = { tile: WordTile; fx: number; fy: number };
 export class PuzzleScene extends Phaser.Scene implements TileHost {
   private tiles = new Map<string, WordTile>();
   private tileList: WordTile[] = [];
-  private layouts: TileLayout[] = [];
   private chains: Chain[] = [];
+  private keyboard: OnScreenKeyboard | null = null;
+  private buttons: IconButton[] = [];
+  private help: HelpPopup | null = null;
   private focused: WordTile | null = null;
   private activePointerTile: WordTile | null = null;
   private sfx = new SoundFx();
   private confetti: Phaser.GameObjects.Particles.ParticleEmitter | null = null;
   private won = false;
+  // Shared layout state, set by recomputeLayoutMetrics() and read by the clamps below.
+  private tileScale = 1;
+  private playBottom = 0;
 
   constructor() {
     super('PuzzleScene');
@@ -40,51 +49,45 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     this.buildConfettiEmitter();
     if (MODE === 'gallery') this.buildGallery();
     else this.buildPuzzle(activePuzzle);
+    // Let each chain's rope push away from the others so lines stay separate.
+    for (const chain of this.chains) chain.setPeers(this.chains);
+    this.keyboard = new OnScreenKeyboard(this, {
+      onKey: (key) => this.routeKey(key),
+      onToggle: () => this.applyLayout(),
+    });
+    this.buildControls();
     this.wireInput();
+    this.applyLayout(true);
 
-    // Re-flow tile home positions when the canvas resizes (orientation change,
-    // devvit webview resize). Tiles glide there via their follow-smoothing.
+    // Re-flow everything when the canvas resizes (orientation change, devvit webview
+    // resize). Tiles glide to their new homes via their follow-smoothing.
     this.scale.on('resize', () => {
-      const W = this.scale.width;
-      const H = this.scale.height;
-      for (const { tile, fx, fy } of this.layouts) tile.setHome(W * fx, H * fy);
+      this.keyboard?.layout();
+      this.applyLayout();
     });
   }
 
   /** One row per link type — all words shown (no hidden answers) so the chains can be
    *  compared side by side. Tiles stay draggable for poking at how the chains stretch. */
   private buildGallery() {
-    const W = this.scale.width;
-    const H = this.scale.height;
-    const top = 80;
-    const step = galleryRows.length > 1 ? (H - 140 - top) / (galleryRows.length - 1) : 0;
-
-    galleryRows.forEach((row, i) => {
-      const y = top + step * i;
-      const fy = y / H;
-      const left = new WordTile(this, W * 0.24, y, this, `${row.type}-l`, row.left, false);
-      const right = new WordTile(this, W * 0.76, y, this, `${row.type}-r`, row.right, false);
+    for (const row of galleryRows) {
+      const left = new WordTile(this, 0, 0, this, `${row.type}-l`, row.left, false);
+      const right = new WordTile(this, 0, 0, this, `${row.type}-r`, row.right, false);
       this.tileList.push(left, right);
-      this.layouts.push({ tile: left, fx: 0.24, fy }, { tile: right, fx: 0.76, fy });
-      this.chains.push(new Chain(this, row.type, left, right));
-    });
+      // Gallery rows are their own pair; other rows sit far away, so obstacle-routing
+      // isn't important here — pass the pair itself (both get filtered as endpoints).
+      this.chains.push(new Chain(this, row.type, left, right, this.tileList));
+    }
   }
 
   private buildPuzzle(puzzle: Puzzle) {
-    const W = this.scale.width;
-    const H = this.scale.height;
-
-    // Lay words out along a gentle zigzag across the middle band, like the mock —
-    // staggered so chains read as diagonals, with room to drag things around.
-    const n = puzzle.words.length;
-    puzzle.words.forEach((word, i) => {
-      const fx = n === 1 ? 0.5 : 0.2 + (0.6 * i) / (n - 1);
-      const fy = 0.45 + (i % 2 === 0 ? -0.13 : 0.11);
-      const tile = new WordTile(this, W * fx, H * fy, this, word.id, word.text, word.hidden);
+    // Tiles are created at the origin; applyLayout() (which knows the canvas size and
+    // keyboard footprint) snaps them into place right after.
+    for (const word of puzzle.words) {
+      const tile = new WordTile(this, 0, 0, this, word.id, word.text, word.hidden);
       this.tiles.set(word.id, tile);
       this.tileList.push(tile);
-      this.layouts.push({ tile, fx, fy });
-    });
+    }
 
     for (const link of puzzle.links) {
       const from = this.tiles.get(link.from);
@@ -93,16 +96,201 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
         console.warn(`Puzzle link references unknown word id: ${link.from} -> ${link.to}`);
         continue;
       }
-      // Chain draws below tiles; for hypernym links `from` must be the superset.
-      this.chains.push(new Chain(this, link.type, from, to));
+      // Chain draws below tiles; for hypernym links `from` must be the superset. All
+      // tiles are passed as obstacles so the arc routes around any word in its way.
+      this.chains.push(new Chain(this, link.type, from, to, this.tileList));
     }
+  }
+
+  // ---------- CONTROLS (shuffle / help) ----------
+
+  /** The corner control cluster. Top-LEFT is intentionally left free for the future
+   *  "back to main menu" button; shuffle + help live in the top-right. */
+  private buildControls() {
+    const shuffle = new IconButton(this, 0, 0, {
+      onTap: () => this.shuffleTiles(),
+      draw: (g) => this.drawShuffleGlyph(g),
+    });
+    const help = new IconButton(this, 0, 0, {
+      onTap: () => this.openHelp(),
+      label: '?',
+    });
+    for (const b of [shuffle, help]) b.setDepth(80);
+    this.buttons = [shuffle, help];
+  }
+
+  /** Two arrows crossing — the standard shuffle symbol. */
+  private drawShuffleGlyph(g: Phaser.GameObjects.Graphics) {
+    g.lineStyle(3, PALETTE.ink, 1);
+    const head = (x: number, y: number, dx: number, dy: number) => {
+      const a = Math.atan2(dy, dx);
+      const s = 5;
+      g.lineBetween(x, y, x - Math.cos(a - 0.5) * s, y - Math.sin(a - 0.5) * s);
+      g.lineBetween(x, y, x - Math.cos(a + 0.5) * s, y - Math.sin(a + 0.5) * s);
+    };
+    // Down-left → up-right, and up-left → down-right, both ending in a rightward head.
+    g.lineBetween(-9, 7, 9, -7);
+    head(9, -7, 2, -1.5);
+    g.lineBetween(-9, -7, 9, 7);
+    head(9, 7, 2, 1.5);
+  }
+
+  private openHelp() {
+    if (this.help) return;
+    for (const b of this.buttons) b.setEnabled(false);
+    this.sfx.tap();
+    this.help = new HelpPopup(this, {
+      onClose: () => {
+        this.help = null;
+        for (const b of this.buttons) b.setEnabled(true);
+      },
+    });
+  }
+
+  private get modalOpen(): boolean {
+    return this.help !== null;
+  }
+
+  /**
+   * Randomly re-arrange the tiles. This is the escape hatch for dragging a tile off
+   * the canvas (you can't lose it), and doubles as a fresh look at the layout: it
+   * takes the current on-screen slots, shuffles which tile goes to which, and adds a
+   * little jitter — so everything is always brought safely back on-screen.
+   */
+  private shuffleTiles() {
+    if (this.tileList.length === 0 || this.modalOpen) return;
+    this.recomputeLayoutMetrics();
+    const slots = this.computeSlots();
+
+    // Fisher–Yates on the slot order.
+    const order = slots.map((_, i) => i);
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [order[i], order[j]] = [order[j]!, order[i]!];
+    }
+
+    const W = this.scale.width;
+    this.tileList.forEach((tile, i) => {
+      const slot = slots[order[i]!]!;
+      const jx = Phaser.Math.FloatBetween(-W * 0.05, W * 0.05);
+      const jy = Phaser.Math.FloatBetween(-24, 24);
+      tile.setHome(this.clampX(tile, slot.x + jx), this.clampY(tile, slot.y + jy));
+    });
+    this.sfx.drop();
+  }
+
+  // ---------- RESPONSIVE LAYOUT ----------
+
+  /** Shared tile scale + play-area bottom for the current canvas. The webview is far
+   *  smaller than a desktop tab (and portrait on phones), so the widest word is scaled
+   *  to fit across the canvas and the keyboard's footprint is carved off the bottom. */
+  private recomputeLayoutMetrics() {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    this.playBottom = Math.max(H - (this.keyboard?.reservedHeight() ?? 0), H * 0.45);
+    const widest = Math.max(...this.tileList.map((t) => t.boxWidth));
+    const n = this.tileList.length;
+    // Base scale: the widest word fits across the canvas.
+    let scale = Phaser.Math.Clamp((W - LAYOUT_MARGIN * 2) / widest, 0.4, 1);
+    // In the landscape zigzag, words share two rows (alternating), so tiles two apart in
+    // index sit side by side. Shrink enough that same-row neighbours don't collide.
+    const portrait = W < H * 0.9;
+    if (MODE === 'puzzle' && !portrait && n > 2) {
+      const gap = 40;
+      const sameRowCenters = (W * 0.64 * 2) / (n - 1); // matches the fx step in computeSlots
+      scale = Math.min(scale, Phaser.Math.Clamp((sameRowCenters - gap) / widest, 0.4, 1));
+    }
+    this.tileScale = scale;
+    for (const t of this.tileList) t.setBaseScale(this.tileScale);
+  }
+
+  /** Clamp a desired centre so the (scaled) tile stays fully on canvas / in the play band. */
+  private clampX(tile: WordTile, x: number): number {
+    const half = (tile.boxWidth / 2) * this.tileScale + LAYOUT_MARGIN;
+    return Phaser.Math.Clamp(x, half, this.scale.width - half);
+  }
+
+  private clampY(tile: WordTile, y: number): number {
+    const half = (tile.boxHeight / 2) * this.tileScale + LAYOUT_MARGIN;
+    return Phaser.Math.Clamp(y, half, this.playBottom - half);
+  }
+
+  /** The default home positions, one per tile (portrait stacks; landscape zigzags). */
+  private computeSlots(): { x: number; y: number }[] {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const availH = this.playBottom;
+    const n = this.tileList.length;
+
+    if (MODE === 'gallery') {
+      const top = 70;
+      const rows = n / 2;
+      const step = rows > 1 ? (availH - 60 - top) / (rows - 1) : 0;
+      return this.tileList.map((tile, idx) => ({
+        x: this.clampX(tile, W * (idx % 2 === 0 ? 0.24 : 0.76)),
+        y: top + step * Math.floor(idx / 2),
+      }));
+    }
+
+    const portrait = W < H * 0.9;
+    return this.tileList.map((tile, i) => {
+      if (portrait) {
+        // Stack down the canvas, nudged alternately so chains still read as diagonals.
+        const bandTop = Math.max(64, availH * 0.16);
+        const bandBottom = availH - Math.max(56, availH * 0.12);
+        const step = n > 1 ? (bandBottom - bandTop) / (n - 1) : 0;
+        return { x: this.clampX(tile, W * (i % 2 === 0 ? 0.38 : 0.62)), y: bandTop + step * i };
+      }
+      // The mock's gentle zigzag across the middle band.
+      const fx = n === 1 ? 0.5 : 0.18 + (0.64 * i) / (n - 1);
+      return { x: this.clampX(tile, W * fx), y: availH * (0.5 + (i % 2 === 0 ? -0.16 : 0.13)) };
+    });
+  }
+
+  private positionButtons() {
+    const W = this.scale.width;
+    const r = this.buttons[0]?.radius ?? 20;
+    const y = LAYOUT_MARGIN + 4 + r;
+    // Right-aligned row in `buttons` order: shuffle sits in the corner, help to its left.
+    this.buttons.forEach((b, i) => {
+      b.setPosition(W - (LAYOUT_MARGIN + 4 + r) - i * (r * 2 + 10), y);
+    });
+  }
+
+  /** Place tiles at their default slots + position the corner controls. `snap` puts
+   *  tiles there instantly (initial layout); otherwise they glide via setHome. */
+  private applyLayout(snap = false) {
+    if (this.tileList.length === 0) return;
+    this.recomputeLayoutMetrics();
+    this.positionButtons();
+    const slots = this.computeSlots();
+    this.tileList.forEach((tile, i) => {
+      const { x, y } = slots[i]!;
+      if (snap) tile.setPosition(x, y);
+      tile.setHome(x, y);
+    });
+  }
+
+  // ---------- INPUT ----------
+
+  /** One key from either keyboard. With nothing focused, a letter or backspace wakes
+   *  the first unsolved answer tile — so on a phone you can just start typing. */
+  private routeKey(key: string) {
+    if (this.modalOpen) return;
+    if (!this.focused && (/^[a-zA-Z]$/.test(key) || key === 'Backspace')) {
+      const target = this.tileList.find((t) => t.editable);
+      if (!target) return;
+      // A far-right localX puts the caret at the first empty cell (focus clamps it).
+      this.focusTile(target, target.boxWidth);
+    }
+    this.focused?.pressKey(key);
   }
 
   private wireInput() {
     this.input.on(
       'gameobjectdown',
       (pointer: Phaser.Input.Pointer, obj: Phaser.GameObjects.GameObject) => {
-        if (!(obj instanceof WordTile)) return;
+        if (this.modalOpen || !(obj instanceof WordTile)) return;
         this.activePointerTile = obj;
         obj.beginPointer(pointer);
       }
@@ -127,7 +315,13 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     );
 
     this.input.keyboard?.on('keydown', (event: KeyboardEvent) => {
-      this.focused?.handleKey(event);
+      if (event.ctrlKey || event.metaKey || event.altKey) return; // browser shortcuts pass through
+      const key = event.key;
+      const isLetter = /^[a-zA-Z]$/.test(key);
+      if (key === 'Backspace') event.preventDefault(); // don't let the webview navigate back
+      // Physical presses light up the matching on-screen key.
+      if (isLetter || key === 'Backspace') this.keyboard?.flashKey(key);
+      this.routeKey(key);
     });
   }
 
@@ -166,7 +360,10 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     // Win when every hidden tile is solved (currently one per puzzle).
     this.won = true;
 
-    this.confetti?.explode(52, tile.x, tile.y - tile.boxHeight / 2);
+    // Typing is over — tuck the keyboard away so the celebration owns the canvas.
+    this.keyboard?.setMinimized(true);
+
+    this.confetti?.explode(52, tile.x, tile.y - tile.displayHeight / 2);
     this.cameras.main.flash(250, 255, 255, 255);
 
     // Let the confetti fly for a beat, then spring the card in with a second burst.

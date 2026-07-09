@@ -29,5 +29,26 @@ export const meteorPuzzle: Puzzle = {
   ],
 };
 
+/**
+ * CHICKEN → (EGG) → CHICKEN, plus EGG ⊂ HEDGEHOG.
+ * The cycle is drawn with CHICKEN written twice — one tile that becomes the egg and a
+ * second the egg becomes — so EGG is a hub linked to three separate words (rather than
+ * one word linked to itself, which would draw two chains on top of each other). EGG is
+ * also spelled entirely with letters found inside HEDGEHOG (h-E-d-G-e-h-o-G).
+ */
+export const chickenPuzzle: Puzzle = {
+  words: [
+    { id: 'chicken1', text: 'CHICKEN' },
+    { id: 'mystery', text: 'EGG', hidden: true },
+    { id: 'chicken2', text: 'CHICKEN' },
+    { id: 'hedgehog', text: 'HEDGEHOG' },
+  ],
+  links: [
+    { type: 'sequence', from: 'chicken1', to: 'mystery' }, // chicken → egg
+    { type: 'sequence', from: 'mystery', to: 'chicken2' }, // egg → chicken
+    { type: 'lettersubset', from: 'mystery', to: 'hedgehog' }, // E,G,G hide inside HEDGEHOG
+  ],
+};
+
 /** The puzzle currently loaded by PuzzleScene. */
-export const activePuzzle: Puzzle = meteorPuzzle;
+export const activePuzzle: Puzzle = chickenPuzzle;

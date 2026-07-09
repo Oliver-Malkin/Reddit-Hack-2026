@@ -56,6 +56,9 @@ export class WordTile extends Phaser.GameObjects.Container {
   private blinkOn = false;
   private announcedFull = false;
 
+  // Layout scale for small canvases — every squish/pop tween is relative to this.
+  private baseScale = 1;
+
   // drag state
   private mode: Mode = 'idle';
   private targetX: number;
@@ -148,8 +151,18 @@ export class WordTile extends Phaser.GameObjects.Container {
     this.renderCells();
   }
 
-  private get editable(): boolean {
+  get editable(): boolean {
     return this.isHidden && !this.solved;
+  }
+
+  /** Layout scale for small canvases; the scene sets this whenever it re-flows. */
+  setBaseScale(s: number) {
+    if (Math.abs(s - this.baseScale) < 0.001) return;
+    this.baseScale = s;
+    // Any in-flight squish/pop tween targets the old scale — drop it and re-target
+    // from the new base next gesture.
+    this.scene.tweens.killTweensOf(this);
+    this.setScale(s);
   }
 
   chainAnchor(): { x: number; y: number } {
@@ -158,8 +171,8 @@ export class WordTile extends Phaser.GameObjects.Container {
 
   /** Distance from centre to the bbox edge along a unit direction — chains stop here. */
   edgeDistance(ux: number, uy: number): number {
-    const hx = this.boxWidth / 2;
-    const hy = this.boxHeight / 2;
+    const hx = (this.boxWidth / 2) * Math.abs(this.scaleX);
+    const hy = (this.boxHeight / 2) * Math.abs(this.scaleY);
     const tx = ux !== 0 ? hx / Math.abs(ux) : Number.POSITIVE_INFINITY;
     const ty = uy !== 0 ? hy / Math.abs(uy) : Number.POSITIVE_INFINITY;
     return Math.min(tx, ty);
@@ -170,8 +183,9 @@ export class WordTile extends Phaser.GameObjects.Container {
   beginPointer(pointer: Phaser.Input.Pointer) {
     this.downX = pointer.x;
     this.downY = pointer.y;
-    this.downLocalX = pointer.x - this.x; // rotation/scale are ~0/1, so this is close enough
-    const localY = pointer.y - this.y;
+    // Local coords (rotation is ~0, so dividing out scale is close enough).
+    this.downLocalX = (pointer.x - this.x) / (this.scaleX || 1);
+    const localY = (pointer.y - this.y) / (this.scaleY || 1);
     this.holdElapsed = 0;
 
     if (!this.editable) {
@@ -225,7 +239,13 @@ export class WordTile extends Phaser.GameObjects.Container {
     this.host.beginTileDrag(this);
     this.host.playFx('grab');
     this.scene.tweens.killTweensOf(this);
-    this.scene.tweens.add({ targets: this, scaleX: 1.045, scaleY: 0.93, duration: 110, ease: 'Quad.easeOut' });
+    this.scene.tweens.add({
+      targets: this,
+      scaleX: 1.045 * this.baseScale,
+      scaleY: 0.93 * this.baseScale,
+      duration: 110,
+      ease: 'Quad.easeOut',
+    });
   }
 
   private endDrag() {
@@ -234,7 +254,13 @@ export class WordTile extends Phaser.GameObjects.Container {
     this.host.endTileDrag(this);
     this.host.playFx('drop');
     this.scene.tweens.killTweensOf(this);
-    this.scene.tweens.add({ targets: this, scaleX: 1, scaleY: 1, duration: 300, ease: 'Back.easeOut' });
+    this.scene.tweens.add({
+      targets: this,
+      scaleX: this.baseScale,
+      scaleY: this.baseScale,
+      duration: 300,
+      ease: 'Back.easeOut',
+    });
   }
 
   /** Home position for layout — the smoothed follow glides the tile there. */
@@ -272,11 +298,11 @@ export class WordTile extends Phaser.GameObjects.Container {
     return Phaser.Math.Clamp(Math.floor(rel / CELL_W), 0, this.slots.length - 1);
   }
 
-  handleKey(event: KeyboardEvent) {
+  /** One key of input — 'A'–'Z', 'Backspace', arrows, etc. Both the physical keyboard
+   *  (via the scene's keydown listener) and the on-screen keyboard route through here. */
+  pressKey(key: string) {
     if (!this.editable || !this.focused) return;
-    if (event.ctrlKey || event.metaKey || event.altKey) return; // let browser shortcuts through
     const n = this.slots.length;
-    const key = event.key;
 
     if (/^[a-zA-Z]$/.test(key)) {
       // Overwrite the current cell and step right (parking on the last cell when full).
@@ -284,7 +310,6 @@ export class WordTile extends Phaser.GameObjects.Container {
       this.caretIndex = Math.min(this.caretIndex + 1, n - 1);
       this.host.playFx('tap');
     } else if (key === 'Backspace') {
-      event.preventDefault();
       // Delete what's in the current cell if there is anything; only when it's already
       // empty does it step back and clear the previous cell. This matches what you'd
       // expect whether you're backspacing a run of letters or fixing a single tapped one.
@@ -366,8 +391,8 @@ export class WordTile extends Phaser.GameObjects.Container {
     // and camera flash carry the celebration without touching the renderer.)
     this.scene.tweens.add({
       targets: this,
-      scaleX: 1.08,
-      scaleY: 1.08,
+      scaleX: 1.08 * this.baseScale,
+      scaleY: 1.08 * this.baseScale,
       yoyo: true,
       duration: 160,
       ease: 'Quad.easeOut',
