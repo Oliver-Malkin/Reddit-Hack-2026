@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { PALETTE, cssColor } from '../theme';
-import { debugEnabled, perf } from '../debug';
+import { debugEnabled, debugFlag, perf } from '../debug';
 
 /** When the debug HUD is on, time this scene's per-frame update for the HUD. */
 const PERF = debugEnabled();
@@ -88,11 +88,15 @@ export class BackgroundScene extends Phaser.Scene {
     this.rng = mulberry32(this.seed);
 
     this.buildGrid();
-    this.buildSquiggleTextures();
-    this.scatterSquiggles();
-
-    this.shapePool = this.buildShapePool();
-    this.spawnFloatingShapes();
+    // Debug layer toggles (see debugFlag) so the HUD's draw-call count can be attributed.
+    if (!debugFlag('nosquiggles')) {
+      this.buildSquiggleTextures();
+      this.scatterSquiggles();
+    }
+    if (!debugFlag('noshapes')) {
+      this.shapePool = this.buildShapePool();
+      this.spawnFloatingShapes();
+    }
 
     this.scale.on('resize', this.handleResize, this);
 
@@ -686,6 +690,6 @@ export class BackgroundScene extends Phaser.Scene {
       }
     }
 
-    if (PERF) perf.bgMs = performance.now() - started;
+    if (PERF) perf.bg.add(performance.now() - started);
   }
 }

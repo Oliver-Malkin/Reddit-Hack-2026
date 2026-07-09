@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { PALETTE, UI_FONT } from '../theme';
+import { PALETTE, UI_FONT, cssColor } from '../theme';
 
 const ROWS = ['QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM'];
 const GAP = 6;
@@ -12,6 +12,10 @@ const MAX_PANEL_W = 540;
 // A pressed key's face shifts down-right into its (collapsed) shadow.
 const PRESS_DX = 2;
 const PRESS_DY = 3;
+// Left/top bleed baked into the texture so the panel's 4px border and key shadows aren't
+// cropped; the panel is drawn at (0,0) in panel space and this pad sits outside it.
+const TEX_PAD = 6;
+const TEX_KEY = 'osk-panel';
 
 export type KeyboardHandlers = {
   /** A key was tapped: 'A'–'Z' or 'Backspace'. */
@@ -20,15 +24,14 @@ export type KeyboardHandlers = {
   onToggle: () => void;
 };
 
-type KeyView = {
+/** A key's hit rectangle + centre, in panel-local space. No GameObjects — the whole key face
+ *  (box, border, letter) is baked into the shared panel texture; this is just geometry. */
+type KeyRect = {
   key: string;
-  bg: Phaser.GameObjects.Graphics;
-  face: Phaser.GameObjects.Container;
-  baseX: number;
-  baseY: number;
+  cx: number;
+  cy: number;
   w: number;
   h: number;
-  pressed: boolean;
 };
 
 /**
@@ -36,14 +39,23 @@ type KeyView = {
  * borders and offset shadows, pinned to the bottom of the canvas. It exists because a
  * phone webview has no physical keys and never shows the native soft keyboard for a
  * canvas — but it stays on desktop too, where physical presses light up the matching
- * key via flashKey(). Keys press IN (shadow collapses, face shifts, yellow flash) for
- * tactile feel. The ˅ button minimises it to a small corner tab so it never has to
- * hog a small webview; reservedHeight() tells the scene how much bottom space to keep.
+ * key via flashKey().
+ *
+ * Rendering: the entire static keyboard is baked once into a single canvas texture (one
+ * draw call) rather than ~28 Graphics+Text pairs (~59 draw calls, which profiling showed
+ * was the app's single biggest render cost). Taps are hit-tested by math against the stored
+ * key rects, and the pressed-in yellow face is a single reused overlay shown only while a
+ * key is held. The ˅ button minimises it to a small corner tab; reservedHeight() tells the
+ * scene how much bottom space to keep.
  */
 export class OnScreenKeyboard extends Phaser.GameObjects.Container {
   private handlers: KeyboardHandlers;
-  private keys: KeyView[] = [];
+  private keyRects: KeyRect[] = [];
   private restoreTab: Phaser.GameObjects.Container;
+  // Press-feedback overlay, reused for whichever key is currently held (0 draws when idle).
+  private pressG!: Phaser.GameObjects.Graphics;
+  private pressLabel!: Phaser.GameObjects.Text;
+  private keyH = 40;
   private panelW = 0;
   private panelH = 0;
   private minimized = false;
@@ -54,6 +66,12 @@ export class OnScreenKeyboard extends Phaser.GameObjects.Container {
     scene.add.existing(this);
     this.setDepth(95);
     this.restoreTab = this.buildRestoreTab();
+
+    // Releasing anywhere clears the held key — wired once (layout() runs many times).
+    const release = () => this.releaseKeys();
+    scene.input.on('pointerup', release);
+    scene.input.on('pointerupoutside', release);
+
     this.layout();
   }
 
@@ -65,7 +83,7 @@ export class OnScreenKeyboard extends Phaser.GameObjects.Container {
   /** Rebuild the keys for the current canvas size and pin to the bottom. Call on resize. */
   layout() {
     this.removeAll(true);
-    this.keys = [];
+    this.keyRects = [];
     const scene = this.scene;
     const W = scene.scale.width;
     const H = scene.scale.height;
@@ -73,43 +91,55 @@ export class OnScreenKeyboard extends Phaser.GameObjects.Container {
     // Size keys off the 10-unit top row; capped so desktop keys stay compact.
     const avail = Math.min(W - 12, MAX_PANEL_W);
     const unit = Math.min(MAX_KEY_W, (avail - PANEL_PAD * 2 - GAP * 9) / 10);
-    const keyH = Phaser.Math.Clamp(unit * 1.3, 32, 50);
+    this.keyH = Phaser.Math.Clamp(unit * 1.3, 32, 50);
     this.panelW = PANEL_PAD * 2 + unit * 10 + GAP * 9;
-    this.panelH = PANEL_PAD * 2 + keyH * 3 + GAP * 2;
+    this.panelH = PANEL_PAD * 2 + this.keyH * 3 + GAP * 2;
 
-    // Card-style panel: offset shadow, near-white fill, thick ink border.
-    const panel = scene.add.graphics();
-    panel.fillStyle(PALETTE.ink, 0.16);
-    panel.fillRoundedRect(5, 6, this.panelW, this.panelH, PANEL_RADIUS);
-    panel.fillStyle(0xffffff, 0.93);
-    panel.fillRoundedRect(0, 0, this.panelW, this.panelH, PANEL_RADIUS);
-    panel.lineStyle(4, PALETTE.ink, 1);
-    panel.strokeRoundedRect(0, 0, this.panelW, this.panelH, PANEL_RADIUS);
-    this.add(panel);
+    // Compute every key's rect (panel-local space) up front so the same geometry drives the
+    // bake, the hit test and the press overlay.
+    ROWS.forEach((row, r) => {
+      const y = PANEL_PAD + this.keyH / 2 + r * (this.keyH + GAP);
+      const units = row.length + (r === 2 ? 1.5 : 0);
+      const gaps = row.length - 1 + (r === 2 ? 1 : 0);
+      let x = (this.panelW - (units * unit + gaps * GAP)) / 2;
+      for (const ch of row) {
+        this.keyRects.push({ key: ch, cx: x + unit / 2, cy: y, w: unit, h: this.keyH });
+        x += unit + GAP;
+      }
+      if (r === 2) {
+        this.keyRects.push({ key: 'Backspace', cx: x + (unit * 1.5) / 2, cy: y, w: unit * 1.5, h: this.keyH });
+      }
+    });
 
-    // Catch presses that land between keys so they don't fall through to the scene
-    // (which would blur the tile being typed into).
+    // The whole panel + keys as one baked image (origin shifted by TEX_PAD so panel-local
+    // (0,0) lands on the container origin, keeping child coords in plain panel space).
+    this.bakePanelTexture();
+    const image = scene.add.image(-TEX_PAD, -TEX_PAD, TEX_KEY).setOrigin(0, 0);
+    this.add(image);
+
+    // Catch presses anywhere on the panel and route them to a key by hit-testing the rects.
     const panelHit = scene.add.container(this.panelW / 2, this.panelH / 2);
     panelHit.setSize(this.panelW, this.panelH);
     panelHit.setInteractive({
       hitArea: new Phaser.Geom.Rectangle(0, 0, this.panelW, this.panelH),
       hitAreaCallback: Phaser.Geom.Rectangle.Contains,
     });
+    panelHit.on('pointerdown', (pointer: Phaser.Input.Pointer) => this.onPanelDown(pointer));
     this.add(panelHit);
 
-    ROWS.forEach((row, r) => {
-      const y = PANEL_PAD + keyH / 2 + r * (keyH + GAP);
-      // The bottom row carries a 1.5-unit backspace after the letters; centre each
-      // row's full width like a real keyboard.
-      const units = row.length + (r === 2 ? 1.5 : 0);
-      const gaps = row.length - 1 + (r === 2 ? 1 : 0);
-      let x = (this.panelW - (units * unit + gaps * GAP)) / 2;
-      for (const ch of row) {
-        this.makeKey(x + unit / 2, y, unit, keyH, ch);
-        x += unit + GAP;
-      }
-      if (r === 2) this.makeKey(x + (unit * 1.5) / 2, y, unit * 1.5, keyH, 'Backspace');
-    });
+    // Press-feedback overlay: a yellow face + shifted letter, hidden until a key is held.
+    this.pressG = scene.add.graphics().setVisible(false);
+    this.add(this.pressG);
+    this.pressLabel = scene.add
+      .text(0, 0, '', {
+        fontFamily: UI_FONT,
+        fontSize: `${Math.round(this.keyH * 0.42)}px`,
+        fontStyle: '900',
+        color: '#1c1c1c',
+      })
+      .setOrigin(0.5)
+      .setVisible(false);
+    this.add(this.pressLabel);
 
     this.buildMinimizeButton();
 
@@ -121,14 +151,14 @@ export class OnScreenKeyboard extends Phaser.GameObjects.Container {
   /** Light up a key as if tapped — mirrors physical keyboard presses on screen. */
   flashKey(key: string) {
     const norm = key.length === 1 ? key.toUpperCase() : key;
-    const view = this.keys.find((k) => k.key === norm);
-    if (!view || view.pressed) return;
-    this.setPressed(view, true);
+    const rect = this.keyRects.find((k) => k.key === norm);
+    if (!rect) return;
+    this.pressKey(rect);
     this.scene.tweens.addCounter({
       from: 0,
       to: 1,
       duration: 110,
-      onComplete: () => this.setPressed(view, false),
+      onComplete: () => this.releaseKeys(),
     });
   }
 
@@ -167,91 +197,132 @@ export class OnScreenKeyboard extends Phaser.GameObjects.Container {
     return this.scene.scale.height - this.panelH - BOTTOM_MARGIN;
   }
 
-  private makeKey(cx: number, cy: number, w: number, h: number, key: string) {
-    const scene = this.scene;
-    const bg = scene.add.graphics();
-    bg.setPosition(cx, cy);
-    this.add(bg);
-
-    // The face (letter or glyph) lives in its own container so pressing can shift it.
-    const face = scene.add.container(cx, cy);
-    if (key === 'Backspace') {
-      face.add(this.makeBackspaceGlyph());
-    } else {
-      const label = scene.add.text(0, 0, key, {
-        fontFamily: UI_FONT,
-        fontSize: `${Math.round(h * 0.42)}px`,
-        fontStyle: '900',
-        color: '#1c1c1c',
-      });
-      label.setOrigin(0.5);
-      face.add(label);
-    }
-    this.add(face);
-
-    const view: KeyView = { key, bg, face, baseX: cx, baseY: cy, w, h, pressed: false };
-    this.drawKey(view);
-
-    // Hit zone (containers hit-test from their top-left, so the rect is (0,0,w,h)).
-    const hit = scene.add.container(cx, cy);
-    hit.setSize(w, h);
-    hit.setInteractive({
-      hitArea: new Phaser.Geom.Rectangle(0, 0, w, h),
-      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
-      useHandCursor: true,
-    });
-    hit.on('pointerdown', () => {
-      this.setPressed(view, true);
-      this.handlers.onKey(key);
-    });
-    hit.on('pointerup', () => this.setPressed(view, false));
-    hit.on('pointerout', () => this.setPressed(view, false));
-    this.add(hit);
-
-    this.keys.push(view);
-  }
-
-  private drawKey(view: KeyView) {
-    const { bg, w, h, pressed } = view;
-    bg.clear();
-    if (!pressed) {
-      bg.fillStyle(PALETTE.ink, 0.18);
-      bg.fillRoundedRect(-w / 2 + 3, -h / 2 + 4, w, h, KEY_RADIUS);
-    }
-    const dx = pressed ? PRESS_DX : 0;
-    const dy = pressed ? PRESS_DY : 0;
-    bg.fillStyle(pressed ? PALETTE.yellow : 0xffffff, 1);
-    bg.fillRoundedRect(-w / 2 + dx, -h / 2 + dy, w, h, KEY_RADIUS);
-    bg.lineStyle(3, PALETTE.ink, 1);
-    bg.strokeRoundedRect(-w / 2 + dx, -h / 2 + dy, w, h, KEY_RADIUS);
-  }
-
-  private setPressed(view: KeyView, pressed: boolean) {
-    if (view.pressed === pressed) return;
-    view.pressed = pressed;
-    this.drawKey(view);
-    view.face.setPosition(
-      view.baseX + (pressed ? PRESS_DX : 0),
-      view.baseY + (pressed ? PRESS_DY : 0),
+  /** Map a pointer to the key under it (panel-local coords) and fire it. */
+  private onPanelDown(pointer: Phaser.Input.Pointer) {
+    const lx = pointer.worldX - this.x;
+    const ly = pointer.worldY - this.y;
+    const rect = this.keyRects.find(
+      (k) => Math.abs(lx - k.cx) <= k.w / 2 && Math.abs(ly - k.cy) <= k.h / 2
     );
+    if (!rect) return;
+    this.pressKey(rect);
+    this.handlers.onKey(rect.key);
   }
 
-  /** Drawn (not a font glyph) so it renders identically on every device. */
-  private makeBackspaceGlyph(): Phaser.GameObjects.Graphics {
-    const g = this.scene.add.graphics();
+  /** Show the pressed-in yellow face for a key via the shared overlay. */
+  private pressKey(rect: KeyRect) {
+    const x = rect.cx - rect.w / 2 + PRESS_DX;
+    const y = rect.cy - rect.h / 2 + PRESS_DY;
+    this.pressG.clear();
+    this.pressG.fillStyle(PALETTE.yellow, 1);
+    this.pressG.fillRoundedRect(x, y, rect.w, rect.h, KEY_RADIUS);
+    this.pressG.lineStyle(3, PALETTE.ink, 1);
+    this.pressG.strokeRoundedRect(x, y, rect.w, rect.h, KEY_RADIUS);
+    if (rect.key === 'Backspace') {
+      this.strokeBackspace(this.pressG, rect.cx + PRESS_DX, rect.cy + PRESS_DY);
+      this.pressLabel.setVisible(false);
+    } else {
+      this.pressLabel.setText(rect.key).setPosition(rect.cx + PRESS_DX, rect.cy + PRESS_DY).setVisible(true);
+    }
+    this.pressG.setVisible(true);
+  }
+
+  private releaseKeys() {
+    if (!this.pressG) return;
+    this.pressG.clear().setVisible(false);
+    this.pressLabel.setVisible(false);
+  }
+
+  // ---------- TEXTURE BAKING ----------
+
+  /** Bake the panel + every key (box, border, letter/glyph) into one canvas texture. */
+  private bakePanelTexture() {
+    const scene = this.scene;
+    const cw = Math.ceil(TEX_PAD + this.panelW + 10);
+    const ch = Math.ceil(TEX_PAD + this.panelH + 10);
+    if (scene.textures.exists(TEX_KEY)) scene.textures.remove(TEX_KEY);
+    const tex = scene.textures.createCanvas(TEX_KEY, cw, ch)!;
+    const ctx = tex.context;
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.translate(TEX_PAD, TEX_PAD); // draw in panel-local space
+
+    // Card-style panel: offset shadow, near-white fill, thick ink border.
+    this.roundRect(ctx, 5, 6, this.panelW, this.panelH, PANEL_RADIUS);
+    ctx.fillStyle = cssColor(PALETTE.ink, 0.16);
+    ctx.fill();
+    this.roundRect(ctx, 0, 0, this.panelW, this.panelH, PANEL_RADIUS);
+    ctx.fillStyle = cssColor(0xffffff, 0.93);
+    ctx.fill();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = cssColor(PALETTE.ink);
+    ctx.stroke();
+
+    ctx.font = `900 ${Math.round(this.keyH * 0.42)}px ${UI_FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    for (const rect of this.keyRects) {
+      const { cx, cy, w, h } = rect;
+      // Key shadow (down-right), then white face + ink border.
+      this.roundRect(ctx, cx - w / 2 + 3, cy - h / 2 + 4, w, h, KEY_RADIUS);
+      ctx.fillStyle = cssColor(PALETTE.ink, 0.18);
+      ctx.fill();
+      this.roundRect(ctx, cx - w / 2, cy - h / 2, w, h, KEY_RADIUS);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = cssColor(PALETTE.ink);
+      ctx.stroke();
+      if (rect.key === 'Backspace') {
+        this.ctxBackspace(ctx, cx, cy);
+      } else {
+        ctx.fillStyle = '#1c1c1c';
+        ctx.fillText(rect.key, cx, cy);
+      }
+    }
+    tex.refresh(); // upload to the GPU under WebGL
+  }
+
+  private roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, r);
+  }
+
+  /** Backspace glyph on a 2D context (baked, unpressed). Mirrors strokeBackspace. */
+  private ctxBackspace(ctx: CanvasRenderingContext2D, cx: number, cy: number) {
+    ctx.strokeStyle = cssColor(PALETTE.ink);
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(cx - 10, cy);
+    ctx.lineTo(cx - 3, cy - 7);
+    ctx.lineTo(cx + 10, cy - 7);
+    ctx.lineTo(cx + 10, cy + 7);
+    ctx.lineTo(cx - 3, cy + 7);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - 3);
+    ctx.lineTo(cx + 6, cy + 3);
+    ctx.moveTo(cx + 6, cy - 3);
+    ctx.lineTo(cx, cy + 3);
+    ctx.stroke();
+  }
+
+  /** Backspace glyph on a Phaser Graphics (pressed overlay). Mirrors ctxBackspace. */
+  private strokeBackspace(g: Phaser.GameObjects.Graphics, cx: number, cy: number) {
     g.lineStyle(3, PALETTE.ink, 1);
     g.beginPath();
-    g.moveTo(-10, 0);
-    g.lineTo(-3, -7);
-    g.lineTo(10, -7);
-    g.lineTo(10, 7);
-    g.lineTo(-3, 7);
+    g.moveTo(cx - 10, cy);
+    g.lineTo(cx - 3, cy - 7);
+    g.lineTo(cx + 10, cy - 7);
+    g.lineTo(cx + 10, cy + 7);
+    g.lineTo(cx - 3, cy + 7);
     g.closePath();
     g.strokePath();
     g.lineStyle(2.5, PALETTE.ink, 1);
-    g.lineBetween(0, -3, 6, 3);
-    g.lineBetween(6, -3, 0, 3);
-    return g;
+    g.lineBetween(cx, cy - 3, cx + 6, cy + 3);
+    g.lineBetween(cx + 6, cy - 3, cx, cy + 3);
   }
 
   private buildMinimizeButton() {

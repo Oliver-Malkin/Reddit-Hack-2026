@@ -11,7 +11,8 @@ import { activePuzzle } from '../puzzle/puzzles';
 import { galleryRows } from '../puzzle/gallery';
 import type { Puzzle } from '../puzzle/types';
 import { PALETTE } from '../theme';
-import { debugEnabled, perf } from '../debug';
+import { debugEnabled, debugFlag, perf } from '../debug';
+import { copyText } from '../clipboard';
 
 /** 'gallery' shows one row per link type for design review; 'puzzle' plays activePuzzle. */
 const MODE: 'gallery' | 'puzzle' = 'puzzle';
@@ -55,10 +56,13 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     else this.buildPuzzle(activePuzzle);
     // Let each chain's rope push away from the others so lines stay separate.
     for (const chain of this.chains) chain.setPeers(this.chains);
-    this.keyboard = new OnScreenKeyboard(this, {
-      onKey: (key) => this.routeKey(key),
-      onToggle: () => this.applyLayout(),
-    });
+    // `?debug&nokeyboard` drops the on-screen keyboard so its ~28 keys' draws can be measured.
+    if (!debugFlag('nokeyboard')) {
+      this.keyboard = new OnScreenKeyboard(this, {
+        onKey: (key) => this.routeKey(key),
+        onToggle: () => this.applyLayout(),
+      });
+    }
     this.buildControls();
     this.wireInput();
     this.applyLayout(true);
@@ -80,7 +84,9 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
       this.tileList.push(left, right);
       // Gallery rows are their own pair; other rows sit far away, so obstacle-routing
       // isn't important here — pass the pair itself (both get filtered as endpoints).
-      this.chains.push(new Chain(this, row.type, left, right, this.tileList));
+      if (!debugFlag('nochains')) {
+        this.chains.push(new Chain(this, row.type, left, right, this.tileList));
+      }
     }
   }
 
@@ -102,7 +108,9 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
       }
       // Chain draws below tiles; for hypernym links `from` must be the superset. All
       // tiles are passed as obstacles so the arc routes around any word in its way.
-      this.chains.push(new Chain(this, link.type, from, to, this.tileList));
+      if (!debugFlag('nochains')) {
+        this.chains.push(new Chain(this, link.type, from, to, this.tileList));
+      }
     }
   }
 
@@ -394,13 +402,9 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
       .map((t) => t.answer)
       .join(' ↔ ');
     const text = `I solved the Wordfish puzzle! 🐟 The hidden word linked ${clues}. Can you find it?`;
-    try {
-      await navigator.clipboard.writeText(text);
-      this.sfx.chime();
-      return true;
-    } catch {
-      return false;
-    }
+    const ok = await copyText(text);
+    if (ok) this.sfx.chime();
+    return ok;
   }
 
   private isHiddenTile(tile: WordTile): boolean {
@@ -442,7 +446,7 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     const t1 = performance.now();
     for (const chain of this.chains) chain.update(time);
     const t2 = performance.now();
-    perf.tilesMs = t1 - t0;
-    perf.chainsMs = t2 - t1;
+    perf.tiles.add(t1 - t0);
+    perf.chains.add(t2 - t1);
   }
 }
