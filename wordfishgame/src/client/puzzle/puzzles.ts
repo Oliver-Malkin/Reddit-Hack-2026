@@ -1,4 +1,4 @@
-import type { Puzzle } from './types';
+import type { Difficulty, Puzzle } from './types';
 
 /** DOG ⊃ (HUSKY) = RASPY — the hidden middle word links both clues. */
 export const dogPuzzle: Puzzle = {
@@ -50,5 +50,49 @@ export const chickenPuzzle: Puzzle = {
   ],
 };
 
-/** The puzzle currently loaded by PuzzleScene. */
-export const activePuzzle: Puzzle = chickenPuzzle;
+// ---------- TODAY'S DAILY PUZZLES ----------
+
+/**
+ * EASY — APPLE ⊃ (CORE) ⊂ LICORICE.
+ * CORE is a part of an APPLE, and its letters hide in order inside LICORICE
+ * (li-C-O-R-i-c-E). One hidden word, two clues either side of it.
+ */
+export const applePuzzle: Puzzle = {
+  words: [
+    { id: 'apple', text: 'APPLE' },
+    { id: 'core', text: 'CORE', hidden: true },
+    { id: 'licorice', text: 'LICORICE' },
+  ],
+  links: [
+    { type: 'meronym', from: 'core', to: 'apple' }, // CORE is part of APPLE
+    { type: 'lettersubset', from: 'core', to: 'licorice' }, // C,O,R,E hide inside LICORICE
+  ],
+};
+
+/**
+ * HARD — VARIETY = (RANGE) ~ (ANGER) → BARGAINING.
+ * Two hidden words chained in a line: RANGE is a synonym of VARIETY, ANGER is an
+ * anagram of RANGE, and ANGER "becomes" BARGAINING (the stages of grief). Both middle
+ * words must be filled to win.
+ */
+export const grievePuzzle: Puzzle = {
+  words: [
+    { id: 'variety', text: 'VARIETY' },
+    { id: 'range', text: 'RANGE', hidden: true },
+    { id: 'anger', text: 'ANGER', hidden: true },
+    { id: 'bargaining', text: 'BARGAINING' },
+  ],
+  links: [
+    { type: 'synonym', from: 'variety', to: 'range' }, // VARIETY = RANGE
+    { type: 'anagram', from: 'range', to: 'anger' }, // RANGE ↔ ANGER
+    { type: 'sequence', from: 'anger', to: 'bargaining' }, // ANGER becomes BARGAINING
+  ],
+};
+
+/** Today's puzzle for a given difficulty. */
+export function puzzleForDifficulty(difficulty: Difficulty): Puzzle {
+  return difficulty === 'hard' ? grievePuzzle : applePuzzle;
+}
+
+/** Fallback puzzle when the scene is booted directly (e.g. debugging) with no difficulty. */
+export const activePuzzle: Puzzle = applePuzzle;

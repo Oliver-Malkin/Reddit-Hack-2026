@@ -28,6 +28,11 @@ const CLEARANCE = 26;
 const LOOP_REACH = [44, 92];
 /** Time-constant (ms) for the drawn rope chasing the picked route. */
 const FOLLOW_MS = 110;
+/** How often (ms) the route is re-scored. Picking a route means building + sampling ~9
+ *  candidate splines — far too costly to redo every frame on a phone. The drawn rope still
+ *  glides toward the last pick EVERY frame (see FOLLOW_MS), so at this cadence the re-pick is
+ *  invisible: motion stays smooth, only the (cheap) route decision is throttled. */
+const SOLVE_INTERVAL_MS = 66;
 /** A challenger must cost less than this fraction of the current route's cost to
  *  displace it — hysteresis so picks commit instead of flip-flopping. */
 const SWITCH_FACTOR = 0.7;
@@ -51,9 +56,10 @@ type Candidate = { key: string; pts: Phaser.Math.Vector2[] };
 const CHIP_LABEL: Record<LinkType, string> = {
   synonym: 'SYNONYM',
   antonym: 'ANTONYM',
-  // Reads specific → general: "ROBIN is a BIRD". The chevrons open toward the broader
-  // word (BIRD) and the ◂ points that way too, so the label agrees with the shapes.
-  hypernym: '◂ IS A',
+  // The ▸ matches the other directional labels: it flags that the link HAS a direction,
+  // not which way it points (the tiles are draggable, so the chevron shapes carry the
+  // actual heading). Without it, "IS A" was the only directional type reading as neutral.
+  hypernym: 'IS A ▸',
   anagram: 'ANAGRAM',
   meronym: 'PART OF ▸',
   lettersubset: 'LETTERS IN ▸',
@@ -62,7 +68,13 @@ const CHIP_LABEL: Record<LinkType, string> = {
 };
 
 /** Types whose shapes carry a direction and so lock to the chain heading (apex → `to`). */
-const DIRECTIONAL = new Set<LinkType>(['hypernym', 'sequence', 'rhyme', 'lettersubset']);
+const DIRECTIONAL = new Set<LinkType>([
+  'hypernym',
+  'sequence',
+  'rhyme',
+  'lettersubset',
+  'meronym', // part → whole; the glyph noses toward the containing word
+]);
 /** Types drawn upright so a legible glyph (= / ≠) always reads. */
 const UPRIGHT = new Set<LinkType>(['synonym', 'antonym']);
 
@@ -107,6 +119,13 @@ export class Chain {
   private chipHalfW = 40;
   /** Where along the curve the chip sits (0–1) — glides toward the clearest spot. */
   private chipU = 0.5;
+  /** Uniform scale for the chip + shapes, driven by the layout so a cramped phone canvas gets
+   *  proportionally smaller links + labels (mirrors how WordTile shrinks). Clamped so labels
+   *  never fall below legibility. */
+  private layoutScale = 1;
+  /** Throttle bookkeeping for the route re-pick (see SOLVE_INTERVAL_MS). */
+  private solveAccum = SOLVE_INTERVAL_MS;
+  private cachedTarget: Phaser.Math.Vector2[] | null = null;
 
   /** Direction is A → B: for the directional types A is the "from" end. `tiles` are all
    *  word tiles in play — candidate routes are penalized for crossing any of them. */
@@ -148,9 +167,45 @@ export class Chain {
     this.peers = chains.filter((c) => c !== this);
   }
 
+  /** Scale the label chip + shapes with the layout. `s` is the scene's tile scale; it's
+   *  clamped here so the label text stays readable even on the smallest canvases. */
+  setLayoutScale(s: number) {
+    const clamped = Phaser.Math.Clamp(s, 0.72, 1.1);
+    if (Math.abs(clamped - this.layoutScale) < 0.001) return;
+    this.layoutScale = clamped;
+    this.chip.setScale(clamped);
+    for (let i = 0; i < this.shapes.length; i++) {
+      this.shapes[i]!.setScale(this.baseScales[i]! * clamped);
+    }
+  }
+
+  /** The chip's on-screen half-width / height, factoring in the layout scale — used for the
+   *  routing "does the label fit" test and the on-canvas clamp. */
+  private chipHalf(): number {
+    return this.chipHalfW * this.layoutScale;
+  }
+  private chipHeight(): number {
+    return CHIP_H * this.layoutScale;
+  }
+
+  /** Tear down every GameObject this chain owns — used when a scene reloads its puzzle. */
+  destroy() {
+    for (const s of this.shapes) s.destroy();
+    this.chip.destroy(); // container destroys its graphics + label too
+    this.shapes = [];
+    this.peers = [];
+  }
+
   /** Where this chain's label chip currently sits — peers keep their chips away. */
   chipPosition(): { x: number; y: number; visible: boolean } {
     return { x: this.chip.x, y: this.chip.y, visible: this.chip.alpha > 0.25 };
+  }
+
+  /** The label chip's centre + size, for the tutorial to spotlight it exactly. Null while
+   *  the chip is faded (tiles too close for the chain to show a label). */
+  chipBounds(): { x: number; y: number; w: number; h: number } | null {
+    if (this.chip.alpha <= 0.25) return null;
+    return { x: this.chip.x, y: this.chip.y, w: this.chipHalf() * 2, h: this.chipHeight() };
   }
 
   /** A tile's bounds inflated by TILE_GAP — the box chains attach to. */
@@ -292,9 +347,11 @@ export class Chain {
     // sideways over empty space), while two touching tiles are not. Minkowski test:
     // inflate each tile by the chip's half-size and check the midpoint against it.
     const midPt = spline.getPointAt(0.5);
+    const chipHalfW = this.chipHalf();
+    const chipHalfH = this.chipHeight() / 2;
     for (const tile of this.tiles) {
-      const hx = (tile.boxWidth / 2) * Math.abs(tile.scaleX) + this.chipHalfW + CHIP_PAD;
-      const hy = (tile.boxHeight / 2) * Math.abs(tile.scaleY) + CHIP_H / 2 + CHIP_PAD;
+      const hx = (tile.boxWidth / 2) * Math.abs(tile.scaleX) + chipHalfW + CHIP_PAD;
+      const hy = (tile.boxHeight / 2) * Math.abs(tile.scaleY) + chipHalfH + CHIP_PAD;
       const ox = hx - Math.abs(midPt.x - tile.x);
       const oy = hy - Math.abs(midPt.y - tile.y);
       if (ox > 0 && oy > 0) cost += Math.min(ox, oy) * 6;
@@ -403,7 +460,14 @@ export class Chain {
     const dtMs = this.lastTime > 0 ? Math.min(time - this.lastTime, 90) : 16.7;
     this.lastTime = time;
 
-    const target = this.solveTarget();
+    // Re-pick the route only every SOLVE_INTERVAL_MS — the expensive part. The drawn rope
+    // still eases toward the last pick every frame below, so motion stays smooth.
+    this.solveAccum += dtMs;
+    if (!this.cachedTarget || this.solveAccum >= SOLVE_INTERVAL_MS) {
+      this.solveAccum = 0;
+      this.cachedTarget = this.solveTarget();
+    }
+    const target = this.cachedTarget;
 
     if (this.display.length === 0) {
       this.display = target.map((p) => p.clone());
@@ -445,8 +509,6 @@ export class Chain {
         img.rotation = Math.atan2(tan.y, tan.x) + shimmy * 0.12;
       } else if (UPRIGHT.has(this.type)) {
         img.rotation = shimmy * 0.14; // stays readable, just a gentle rock
-      } else if (this.type === 'meronym') {
-        img.rotation = shimmy * 0.5; // slow quarter-turn sway
       } else {
         img.rotation = t * this.spinSpeeds[i]! + phase; // antonym, anagram: free spin
       }
@@ -481,9 +543,11 @@ export class Chain {
     const chipPos = curve.getPointAt(this.chipU);
     const W = this.scene.scale.width;
     const H = this.scene.scale.height;
+    const chipHalfW = this.chipHalf();
+    const chipEdgeY = this.chipHeight() / 2 + 4;
     this.chip.setPosition(
-      Phaser.Math.Clamp(chipPos.x, this.chipHalfW + 4, W - this.chipHalfW - 4),
-      Phaser.Math.Clamp(chipPos.y, 17, H - 17)
+      Phaser.Math.Clamp(chipPos.x, chipHalfW + 4, W - chipHalfW - 4),
+      Phaser.Math.Clamp(chipPos.y, chipEdgeY, H - chipEdgeY)
     );
     this.chip.rotation = Math.sin(t * 0.9) * 0.035;
     // Chips reach full opacity sooner than before (phone layouts pack tiles close, so
@@ -617,21 +681,39 @@ export class Chain {
       arrowArc(-2.5 + Math.PI, -0.6 + Math.PI);
     });
 
-    // Meronym — a small purple square nested inside a larger outline: a part within a whole.
+    // Meronym — a small purple part nosing (via a short arrow) into a larger whole on the
+    // leading (+x) side. Heading-locked, so the arrow always points from part toward whole.
     bake('chain-meronym', 26, (ctx) => {
       ctx.lineJoin = 'round';
+      // The whole: a larger square outline on the +x (destination) side.
       ctx.beginPath();
-      ctx.roundRect(-10, -10, 20, 20, 4);
+      ctx.roundRect(2, -8, 10, 16, 3);
       ctx.lineWidth = 3;
       ctx.strokeStyle = ink;
       ctx.stroke();
+      // The part: a small purple block on the -x (source) side.
       ctx.beginPath();
-      ctx.roundRect(-4.5, -4.5, 9, 9, 2);
+      ctx.roundRect(-12, -4, 8, 8, 2);
       ctx.fillStyle = '#8e44ad';
       ctx.fill();
       ctx.lineWidth = 2;
       ctx.strokeStyle = ink;
       ctx.stroke();
+      // A short arrow carrying the part into the whole — the direction cue.
+      ctx.strokeStyle = ink;
+      ctx.fillStyle = ink;
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-3, 0);
+      ctx.lineTo(-0.5, 0);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(2, 0);
+      ctx.lineTo(-1, 2.1);
+      ctx.lineTo(-1, -2.1);
+      ctx.closePath();
+      ctx.fill();
     });
 
     // Letter-subset — an arrow flying INTO a bracket, drawn pointing +x. The chain

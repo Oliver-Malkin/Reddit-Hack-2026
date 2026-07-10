@@ -4,18 +4,25 @@ import type { TileFxName, TileHost } from '../puzzle/WordTile';
 import { Chain } from '../puzzle/Chain';
 import { OnScreenKeyboard } from '../puzzle/Keyboard';
 import { IconButton } from '../puzzle/IconButton';
+import { createDecorToggle, drawDecorGlyph } from '../puzzle/decorToggle';
 import { HelpPopup } from '../puzzle/HelpPopup';
 import { SoundFx } from '../puzzle/SoundFx';
 import { WinPopup } from '../puzzle/WinPopup';
-import { activePuzzle } from '../puzzle/puzzles';
+import { activePuzzle, puzzleForDifficulty } from '../puzzle/puzzles';
 import { galleryRows } from '../puzzle/gallery';
-import type { Puzzle } from '../puzzle/types';
+import type { Difficulty, Puzzle } from '../puzzle/types';
 import { PALETTE } from '../theme';
-import { debugEnabled, debugFlag, perf } from '../debug';
+import { debugEnabled, perf } from '../debug';
 import { copyText } from '../clipboard';
+import { BackgroundScene } from './BackgroundScene';
+import { slideCameraIn, transitionToPage, isTransitioning } from './pageTransition';
+import type { PageEnterData } from './pageTransition';
 
-/** 'gallery' shows one row per link type for design review; 'puzzle' plays activePuzzle. */
+/** 'gallery' shows one row per link type for design review; 'puzzle' plays a daily puzzle. */
 const MODE: 'gallery' | 'puzzle' = 'puzzle';
+
+/** Data the puzzle is launched/woken with: which edge to slide in from + which puzzle. */
+type PuzzleEnterData = Partial<PageEnterData> & { difficulty?: Difficulty };
 
 /** When the debug HUD is on, attribute per-frame time to tiles vs. chains. */
 const PERF = debugEnabled();
@@ -35,12 +42,22 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
   private chains: Chain[] = [];
   private keyboard: OnScreenKeyboard | null = null;
   private buttons: IconButton[] = [];
+  private backButton: IconButton | null = null;
+  private cleanButton: IconButton | null = null;
   private help: HelpPopup | null = null;
   private focused: WordTile | null = null;
   private activePointerTile: WordTile | null = null;
   private sfx = new SoundFx();
   private confetti: Phaser.GameObjects.Particles.ParticleEmitter | null = null;
+  private winPopup: WinPopup | null = null;
   private won = false;
+  // The puzzle currently on the board, its difficulty (for the share recap), and which of
+  // its hidden words are solved so far.
+  private currentPuzzle: Puzzle = activePuzzle;
+  private currentDifficulty: Difficulty = 'easy';
+  private solvedHidden = new Set<string>();
+  // True while a page transition is playing — input is locked so it can't be interrupted.
+  private transitioning = false;
   // Shared layout state, set by recomputeLayoutMetrics() and read by the clamps below.
   private tileScale = 1;
   private playBottom = 0;
@@ -50,22 +67,18 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
   }
 
   create() {
+    // Built once and kept across sleep/wake: textures, particles, keyboard, controls, input.
     Chain.bakeTextures(this);
     this.buildConfettiEmitter();
-    if (MODE === 'gallery') this.buildGallery();
-    else this.buildPuzzle(activePuzzle);
-    // Let each chain's rope push away from the others so lines stay separate.
-    for (const chain of this.chains) chain.setPeers(this.chains);
-    // `?debug&nokeyboard` drops the on-screen keyboard so its ~28 keys' draws can be measured.
-    if (!debugFlag('nokeyboard')) {
-      this.keyboard = new OnScreenKeyboard(this, {
-        onKey: (key) => this.routeKey(key),
-        onToggle: () => this.applyLayout(),
-      });
-    }
+    this.keyboard = new OnScreenKeyboard(this, {
+      onKey: (key) => this.routeKey(key),
+      onToggle: () => this.applyLayout(),
+    });
     this.buildControls();
     this.wireInput();
-    this.applyLayout(true);
+
+    // Load the puzzle we were launched with and (if arriving from the menu) slide it in.
+    this.enter(this.scene.settings.data as PuzzleEnterData | undefined);
 
     // Re-flow everything when the canvas resizes (orientation change, devvit webview
     // resize). Tiles glide to their new homes via their follow-smoothing.
@@ -73,6 +86,59 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
       this.keyboard?.layout();
       this.applyLayout();
     });
+
+    // Woken from the menu again — reload the chosen puzzle and slide back in.
+    this.events.on(Phaser.Scenes.Events.WAKE, (_sys: unknown, data: PuzzleEnterData) =>
+      this.enter(data)
+    );
+  }
+
+  /** (Re)load the board for this entry and slide it in from the given edge. Runs on first
+   *  launch and on every wake, so choosing a different difficulty rebuilds cleanly. */
+  private enter(data?: PuzzleEnterData) {
+    this.transitioning = false;
+    this.won = false;
+    // A win card from the previous visit would otherwise linger over the new puzzle.
+    this.winPopup?.destroy();
+    this.winPopup = null;
+    for (const b of this.allButtons()) b.setEnabled(true);
+    // The clean toggle is shared with the menu; re-sync its glyph to the current state.
+    const bg = this.scene.get('BackgroundScene') as BackgroundScene;
+    this.cleanButton?.setFace((f) => drawDecorGlyph(f, bg.isDecorHidden()));
+    this.keyboard?.setMinimized(false);
+
+    this.clearBoard();
+    if (MODE === 'gallery') this.buildGallery();
+    else this.loadPuzzle(data?.difficulty ?? 'easy');
+    // Let each chain's rope push away from the others so lines stay separate.
+    for (const chain of this.chains) chain.setPeers(this.chains);
+    this.applyLayout(true);
+
+    if (data?.enterFrom) slideCameraIn(this, data.enterFrom);
+    else this.cameras.main.setScroll(0, 0);
+  }
+
+  /** Build the daily puzzle for a difficulty onto the (already cleared) board. */
+  private loadPuzzle(difficulty: Difficulty) {
+    this.currentDifficulty = difficulty;
+    this.currentPuzzle = puzzleForDifficulty(difficulty);
+    this.buildPuzzle(this.currentPuzzle);
+  }
+
+  /** Destroy every tile and chain so the board can be rebuilt (difficulty change / re-entry). */
+  private clearBoard() {
+    for (const tile of this.tileList) tile.destroy();
+    for (const chain of this.chains) chain.destroy();
+    this.tiles.clear();
+    this.tileList = [];
+    this.chains = [];
+    this.solvedHidden.clear();
+    this.focused = null;
+    this.activePointerTile = null;
+  }
+
+  private allButtons(): IconButton[] {
+    return this.backButton ? [...this.buttons, this.backButton] : this.buttons;
   }
 
   /** One row per link type — all words shown (no hidden answers) so the chains can be
@@ -84,9 +150,7 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
       this.tileList.push(left, right);
       // Gallery rows are their own pair; other rows sit far away, so obstacle-routing
       // isn't important here — pass the pair itself (both get filtered as endpoints).
-      if (!debugFlag('nochains')) {
-        this.chains.push(new Chain(this, row.type, left, right, this.tileList));
-      }
+      this.chains.push(new Chain(this, row.type, left, right, this.tileList));
     }
   }
 
@@ -108,17 +172,19 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
       }
       // Chain draws below tiles; for hypernym links `from` must be the superset. All
       // tiles are passed as obstacles so the arc routes around any word in its way.
-      if (!debugFlag('nochains')) {
-        this.chains.push(new Chain(this, link.type, from, to, this.tileList));
-      }
+      this.chains.push(new Chain(this, link.type, from, to, this.tileList));
     }
   }
 
-  // ---------- CONTROLS (shuffle / help) ----------
+  // ---------- CONTROLS (back / shuffle / help / clean) ----------
 
-  /** The corner control cluster. Top-LEFT is intentionally left free for the future
-   *  "back to main menu" button; shuffle + help live in the top-right. */
+  /** Corner controls: a "back to menu" home button sits alone in the top-LEFT (navigation,
+   *  away from the tools); shuffle, help and clean-mode form the top-RIGHT cluster. */
   private buildControls() {
+    const back = new IconButton(this, 0, 0, {
+      onTap: () => this.returnToMenu(),
+      draw: (g) => this.drawHomeGlyph(g),
+    });
     const shuffle = new IconButton(this, 0, 0, {
       onTap: () => this.shuffleTiles(),
       draw: (g) => this.drawShuffleGlyph(g),
@@ -127,8 +193,41 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
       onTap: () => this.openHelp(),
       label: '?',
     });
-    for (const b of [shuffle, help]) b.setDepth(80);
-    this.buttons = [shuffle, help];
+    // Clean mode: hide the drifting background shapes/squiggles. Shared with the menu — the
+    // state lives on BackgroundScene, so both toggles stay in sync.
+    const clean = createDecorToggle(this, () => this.sfx.tap());
+    for (const b of [back, shuffle, help, clean]) b.setDepth(80);
+    this.backButton = back;
+    this.cleanButton = clean;
+    this.buttons = [shuffle, help, clean];
+  }
+
+  /** Return to the main menu: this board slides off to the right while the menu slides in
+   *  from the left, and the background parallax settles back to its resting view. */
+  private returnToMenu() {
+    if (this.transitioning || this.modalOpen || isTransitioning()) return;
+    this.transitioning = true;
+    this.sfx.tap();
+    for (const b of this.allButtons()) b.setEnabled(false);
+    transitionToPage(this, 'MenuScene', {}, 'right', 0);
+  }
+
+  /** A simple house outline — the back-to-menu glyph. */
+  private drawHomeGlyph(g: Phaser.GameObjects.Graphics) {
+    g.lineStyle(3, PALETTE.ink, 1);
+    g.beginPath();
+    g.moveTo(-9, 0); // roof left
+    g.lineTo(0, -9); // apex
+    g.lineTo(9, 0); // roof right
+    g.strokePath();
+    g.beginPath();
+    g.moveTo(-6, -1);
+    g.lineTo(-6, 9); // left wall
+    g.lineTo(6, 9); // floor
+    g.lineTo(6, -1); // right wall
+    g.strokePath();
+    // Door.
+    g.strokeRect(-2, 3, 4, 6);
   }
 
   /** Two arrows crossing — the standard shuffle symbol. */
@@ -214,6 +313,7 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     }
     this.tileScale = scale;
     for (const t of this.tileList) t.setBaseScale(this.tileScale);
+    for (const c of this.chains) c.setLayoutScale(this.tileScale);
   }
 
   /** Clamp a desired centre so the (scaled) tile stays fully on canvas / in the play band. */
@@ -262,11 +362,14 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
   private positionButtons() {
     const W = this.scale.width;
     const r = this.buttons[0]?.radius ?? 20;
-    const y = LAYOUT_MARGIN + 4 + r;
+    const inset = LAYOUT_MARGIN + 4 + r;
+    const y = inset;
     // Right-aligned row in `buttons` order: shuffle sits in the corner, help to its left.
     this.buttons.forEach((b, i) => {
-      b.setPosition(W - (LAYOUT_MARGIN + 4 + r) - i * (r * 2 + 10), y);
+      b.setPosition(W - inset - i * (r * 2 + 10), y);
     });
+    // Back-to-menu button alone in the top-left corner.
+    this.backButton?.setPosition(inset, y);
   }
 
   /** Place tiles at their default slots + position the corner controls. `snap` puts
@@ -369,14 +472,24 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
 
   tileSolved(tile: WordTile) {
     if (this.won) return;
-    // Win when every hidden tile is solved (currently one per puzzle).
-    this.won = true;
+    this.confetti?.explode(30, tile.x, tile.y - tile.displayHeight / 2);
+    this.solvedHidden.add(tile.wordId);
 
+    // Win only once EVERY hidden word is filled (the hard puzzle has two).
+    const hiddenIds = this.currentPuzzle.words.filter((w) => w.hidden).map((w) => w.id);
+    const allSolved = hiddenIds.every((id) => this.solvedHidden.has(id));
+    if (!allSolved) {
+      this.sfx.chime(); // one down, more to go
+      return;
+    }
+
+    this.won = true;
+    this.sfx.win();
     // Typing is over — tuck the keyboard away so the celebration owns the canvas.
     this.keyboard?.setMinimized(true);
-
-    this.confetti?.explode(52, tile.x, tile.y - tile.displayHeight / 2);
     this.cameras.main.flash(250, 255, 255, 255);
+
+    const answers = hiddenIds.map((id) => this.tiles.get(id)?.answer ?? '').filter(Boolean);
 
     // Let the confetti fly for a beat, then spring the card in with a second burst.
     this.tweens.addCounter({
@@ -386,29 +499,47 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
       onComplete: () => {
         const cx = this.scale.width / 2;
         const cy = this.scale.height * 0.42;
-        new WinPopup(this, cx, cy, {
-          answer: tile.answer,
+        const popup = new WinPopup(this, cx, cy, {
+          answers,
           onShare: () => this.shareResult(),
         });
+        popup.once(Phaser.GameObjects.Events.DESTROY, () => {
+          if (this.winPopup === popup) this.winPopup = null;
+        });
+        this.winPopup = popup;
         this.confetti?.explode(36, cx, cy - 130);
       },
     });
   }
 
-  /** Copies a Wordle-style share blurb; returns whether the clipboard write worked. */
+  // One sea-creature per hidden word — a spoiler-free tally of how many words were caught,
+  // a light nod to the name without spelling anything out.
+  private static readonly HIDDEN_ICONS = ['🐟', '🦀', '🐙', '🦑', '🦐', '🐠', '🐡', '🦞'];
+
+  /** Copies a short, spoiler-free, copy-pasteable brag; returns whether the write worked. */
   private async shareResult(): Promise<boolean> {
-    const clues = this.tileList
-      .filter((t) => !this.isHiddenTile(t))
-      .map((t) => t.answer)
-      .join(' ↔ ');
-    const text = `I solved the Wordfish puzzle! 🐟 The hidden word linked ${clues}. Can you find it?`;
-    const ok = await copyText(text);
+    const ok = await copyText(this.buildShareText());
     if (ok) this.sfx.chime();
     return ok;
   }
 
-  private isHiddenTile(tile: WordTile): boolean {
-    return activePuzzle.words.some((w) => w.id === tile.wordId && w.hidden === true);
+  /**
+   * The share blurb: two short lines that give away nothing about the answers, name where
+   * to play (the subreddit), and tee up the daily-streak hook. A creature per hidden word
+   * stands in for what was solved. Kept brief on purpose — a wall of identical text pasted
+   * into every comment is what reads as spam.
+   */
+  private buildShareText(): string {
+    const hiddenCount = this.currentPuzzle.words.filter((w) => w.hidden).length;
+    const catch_ = Array.from(
+      { length: Math.max(1, hiddenCount) },
+      (_, i) => PuzzleScene.HIDDEN_ICONS[i % PuzzleScene.HIDDEN_ICONS.length]
+    ).join('');
+    const difficulty = this.currentDifficulty === 'hard' ? 'Hard' : 'Easy';
+    return (
+      `Today's Wordfish (${difficulty}) — ${catch_} caught!\n` +
+      `Play the daily at r/wordfishgame — how long can you keep your streak?`
+    );
   }
 
   // ---------- TileHost ----------

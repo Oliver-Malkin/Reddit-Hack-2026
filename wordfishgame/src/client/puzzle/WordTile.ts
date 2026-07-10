@@ -43,10 +43,15 @@ export class WordTile extends Phaser.GameObjects.Container {
   readonly answer: string;
   readonly boxWidth: number;
   readonly boxHeight: number;
+  /** The word actually entered when solved — usually `answer`, but see `accept`. */
+  solvedWith = '';
 
   private host: TileHost;
   private isHidden: boolean;
   private solved = false;
+  /** Extra words (besides `answer`) that also count as correct. Empty for real puzzles so
+   *  each has a unique solution; the tutorial uses it for its "non-obvious answer" gag. */
+  private accept: string[];
 
   // letter state
   private slots: string[];
@@ -81,11 +86,13 @@ export class WordTile extends Phaser.GameObjects.Container {
     wordId: string,
     text: string,
     hidden = false,
+    accept: string[] = [],
   ) {
     super(scene, x, y);
     this.host = host;
     this.wordId = wordId;
     this.answer = text.toUpperCase();
+    this.accept = accept.map((w) => w.toUpperCase());
     this.isHidden = hidden;
     this.targetX = x;
     this.targetY = y;
@@ -180,10 +187,13 @@ export class WordTile extends Phaser.GameObjects.Container {
   // ---------- POINTER (called by the scene) ----------
 
   beginPointer(pointer: Phaser.Input.Pointer) {
-    this.downX = pointer.x;
-    this.downY = pointer.y;
+    // worldX/worldY (not x/y): these are the camera-transformed coordinates, so the tile
+    // tracks the pointer correctly whatever the camera's scroll or zoom — the latter matters
+    // on high-DPI screens, where the camera is zoomed to render the buffer at device pixels.
+    this.downX = pointer.worldX;
+    this.downY = pointer.worldY;
     // Local coords (rotation is ~0, so dividing out scale is close enough).
-    this.downLocalX = (pointer.x - this.x) / (this.scaleX || 1);
+    this.downLocalX = (pointer.worldX - this.x) / (this.scaleX || 1);
     // Every tile starts pending: it becomes a drag if the pointer travels, or a tap if
     // it's released in place. No region test — the whole surface does both jobs.
     this.mode = 'pending';
@@ -191,20 +201,20 @@ export class WordTile extends Phaser.GameObjects.Container {
 
   pointerMove(pointer: Phaser.Input.Pointer) {
     if (this.mode === 'idle') return;
-    const moved = Math.hypot(pointer.x - this.downX, pointer.y - this.downY);
+    const moved = Math.hypot(pointer.worldX - this.downX, pointer.worldY - this.downY);
 
     if (this.mode === 'pending' && moved > MOVE_THRESHOLD) {
       this.startDrag(pointer);
     }
 
     if (this.mode === 'dragging') {
-      this.targetX = pointer.x + this.grabOffsetX;
-      this.targetY = pointer.y + this.grabOffsetY;
+      this.targetX = pointer.worldX + this.grabOffsetX;
+      this.targetY = pointer.worldY + this.grabOffsetY;
     }
   }
 
   pointerUp(pointer: Phaser.Input.Pointer) {
-    const moved = Math.hypot(pointer.x - this.downX, pointer.y - this.downY);
+    const moved = Math.hypot(pointer.worldX - this.downX, pointer.worldY - this.downY);
     if (this.mode === 'dragging') {
       this.endDrag();
     } else if (this.mode === 'pending' && moved <= MOVE_THRESHOLD && this.editable) {
@@ -216,8 +226,8 @@ export class WordTile extends Phaser.GameObjects.Container {
   private startDrag(pointer: Phaser.Input.Pointer) {
     this.mode = 'dragging';
     this.grabbed = true;
-    this.grabOffsetX = this.x - pointer.x; // keep the grabbed point under the cursor
-    this.grabOffsetY = this.y - pointer.y;
+    this.grabOffsetX = this.x - pointer.worldX; // keep the grabbed point under the cursor
+    this.grabOffsetY = this.y - pointer.worldY;
     this.targetX = this.x;
     this.targetY = this.y;
     this.setDepth(50);
@@ -338,7 +348,9 @@ export class WordTile extends Phaser.GameObjects.Container {
     // A correct word always wins — even if the player fixed the last letter in place on
     // an already-full guess (which never dips back to non-full). The wrong-answer buzz,
     // by contrast, fires only once per fill so overwriting wrong→wrong doesn't spam it.
-    if (this.slots.join('') === this.answer) {
+    const guess = this.slots.join('');
+    if (guess === this.answer || this.accept.includes(guess)) {
+      this.solvedWith = guess;
       this.solve();
     } else if (!this.announcedFull) {
       this.announcedFull = true;
@@ -383,7 +395,8 @@ export class WordTile extends Phaser.GameObjects.Container {
       ease: 'Quad.easeOut',
     });
 
-    this.host.playFx('win');
+    // The host decides the sound: a full win jingle, or a lighter note when there are
+    // still more hidden words to go (see PuzzleScene.tileSolved).
     this.host.tileSolved(this);
   }
 

@@ -9,8 +9,8 @@ const BTN_W = 190;
 const BTN_H = 46;
 
 export type WinPopupOptions = {
-  /** The solved word, shown in the subtitle. */
-  answer: string;
+  /** The solved hidden word(s), shown in the subtitle. */
+  answers: string[];
   /** Called on share click; resolve true if the share text reached the clipboard. */
   onShare: () => Promise<boolean>;
 };
@@ -24,9 +24,14 @@ export class WinPopup extends Phaser.GameObjects.Container {
   private btnLabel: Phaser.GameObjects.Text;
   private btnBg: Phaser.GameObjects.Graphics;
   private shareBusy = false;
+  // Once destroyed, the deferred share callbacks (the clipboard promise and the button
+  // revert tween) must not touch the now-dead graphics — that used to throw and freeze the
+  // whole game if the card was closed before they fired.
+  private killed = false;
 
   constructor(scene: Phaser.Scene, x: number, y: number, options: WinPopupOptions) {
     super(scene, x, y);
+    this.once(Phaser.GameObjects.Events.DESTROY, () => (this.killed = true));
 
     // Offset shadow + panel.
     const panel = scene.add.graphics();
@@ -44,6 +49,29 @@ export class WinPopup extends Phaser.GameObjects.Container {
     panel.fillCircle(PANEL_W / 2 - 24, PANEL_H / 2 - 22, 6);
     this.add(panel);
 
+    // The whole card is a drag handle, so the win screen can be nudged aside (matching the
+    // draggable tutorial coach + word tiles). Added before the buttons below, which render
+    // on top and still take their own taps; only empty card area starts a drag. Dragging is
+    // tracked from a captured grab offset so it's immune to the card's spring-in scale.
+    const dragHandle = scene.add.container(0, 0);
+    dragHandle.setSize(PANEL_W, PANEL_H);
+    dragHandle.setInteractive({
+      hitArea: new Phaser.Geom.Rectangle(-PANEL_W / 2, -PANEL_H / 2, PANEL_W, PANEL_H),
+      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+      draggable: true,
+      useHandCursor: true,
+    });
+    let grabX = 0;
+    let grabY = 0;
+    dragHandle.on('dragstart', (p: Phaser.Input.Pointer) => {
+      grabX = this.x - p.worldX;
+      grabY = this.y - p.worldY;
+    });
+    dragHandle.on('drag', (p: Phaser.Input.Pointer) => {
+      this.setPosition(p.worldX + grabX, p.worldY + grabY);
+    });
+    this.add(dragHandle);
+
     const title = scene.add.text(0, -PANEL_H / 2 + 52, 'YOU WIN!', {
       fontFamily: UI_FONT,
       fontSize: '36px',
@@ -53,7 +81,12 @@ export class WinPopup extends Phaser.GameObjects.Container {
     title.setOrigin(0.5);
     this.add(title);
 
-    const subtitle = scene.add.text(0, -PANEL_H / 2 + 96, `The word was ${options.answer}`, {
+    const words = options.answers;
+    const subtitleText =
+      words.length > 1
+        ? `The words were ${words.slice(0, -1).join(', ')} & ${words[words.length - 1]}`
+        : `The word was ${words[0] ?? ''}`;
+    const subtitle = scene.add.text(0, -PANEL_H / 2 + 96, subtitleText, {
       fontFamily: UI_FONT,
       fontSize: '15px',
       fontStyle: '800',
@@ -89,15 +122,17 @@ export class WinPopup extends Phaser.GameObjects.Container {
       if (this.shareBusy) return;
       this.shareBusy = true;
       void options.onShare().then((ok) => {
+        if (this.killed) return; // card was closed before the clipboard write resolved
         this.drawButton(ok ? PALETTE.green : PALETTE.red);
         this.btnLabel.setText(ok ? 'COPIED!' : 'COPY FAILED');
-        this.btnLabel.setColor(ok ? '#ffffff' : '#ffffff');
+        this.btnLabel.setColor('#ffffff');
         // Revert after a moment so it can be shared again.
         scene.tweens.addCounter({
           from: 0,
           to: 1,
           duration: 1600,
           onComplete: () => {
+            if (this.killed) return; // closed mid-wait — don't touch destroyed graphics
             this.drawButton(PALETTE.yellow);
             this.btnLabel.setText('SHARE RESULT').setColor('#1c1c1c');
             this.shareBusy = false;

@@ -34,9 +34,7 @@ export class IconButton extends Phaser.GameObjects.Container {
 
     this.face = scene.add.container(0, 0);
     if (opts.draw) {
-      const g = scene.add.graphics();
-      opts.draw(g);
-      this.face.add(g);
+      this.setGlyph(opts.draw);
     } else if (opts.label !== undefined) {
       const t = scene.add.text(0, 0, opts.label, {
         fontFamily: UI_FONT,
@@ -66,6 +64,22 @@ export class IconButton extends Phaser.GameObjects.Container {
     this.on('pointerout', () => this.setPressed(false));
 
     scene.add.existing(this);
+  }
+
+  /** Replace the drawn vector glyph — used to reflect a toggle button's on/off state. */
+  setGlyph(draw: (g: Phaser.GameObjects.Graphics) => void) {
+    this.face.removeAll(true);
+    const g = this.scene.add.graphics();
+    draw(g);
+    this.face.add(g);
+  }
+
+  /** Replace the face with arbitrary content built into its container (e.g. a text label that
+   *  can be struck through). Like setGlyph, but for glyphs that aren't a single vector path.
+   *  The face still shifts down-right on press. */
+  setFace(build: (face: Phaser.GameObjects.Container) => void) {
+    this.face.removeAll(true);
+    build(this.face);
   }
 
   /** Grey out and stop responding (e.g. while a modal is open). */

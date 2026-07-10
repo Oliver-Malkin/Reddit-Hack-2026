@@ -40,3 +40,6 @@ export type Puzzle = {
   words: PuzzleWord[];
   links: PuzzleLink[];
 };
+
+/** The two daily difficulties offered on the menu. */
+export type Difficulty = 'easy' | 'hard';

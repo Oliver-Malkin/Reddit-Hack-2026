@@ -15,7 +15,8 @@ const PRESS_DY = 3;
 // Left/top bleed baked into the texture so the panel's 4px border and key shadows aren't
 // cropped; the panel is drawn at (0,0) in panel space and this pad sits outside it.
 const TEX_PAD = 6;
-const TEX_KEY = 'osk-panel';
+// Supersample the baked panel so it stays crisp on high-DPI (retina / phone) screens.
+const TEX_RES = 2;
 
 export type KeyboardHandlers = {
   /** A key was tapped: 'A'–'Z' or 'Backspace'. */
@@ -59,10 +60,16 @@ export class OnScreenKeyboard extends Phaser.GameObjects.Container {
   private panelW = 0;
   private panelH = 0;
   private minimized = false;
+  // Baked-panel texture key, unique PER SCENE. Each scene has its own keyboard, and the
+  // texture manager is game-wide — a shared key let one scene's re-bake destroy the texture
+  // another scene's keyboard image still pointed at, which rendered a dead texture (blank
+  // keyboard, and intermittently a hard render freeze).
+  private texKey: string;
 
   constructor(scene: Phaser.Scene, handlers: KeyboardHandlers) {
     super(scene, 0, 0);
     this.handlers = handlers;
+    this.texKey = `osk-panel-${scene.scene.key}`;
     scene.add.existing(this);
     this.setDepth(95);
     this.restoreTab = this.buildRestoreTab();
@@ -114,7 +121,9 @@ export class OnScreenKeyboard extends Phaser.GameObjects.Container {
     // The whole panel + keys as one baked image (origin shifted by TEX_PAD so panel-local
     // (0,0) lands on the container origin, keeping child coords in plain panel space).
     this.bakePanelTexture();
-    const image = scene.add.image(-TEX_PAD, -TEX_PAD, TEX_KEY).setOrigin(0, 0);
+    // Texture is baked at TEX_RES×; display at 1/TEX_RES so it lands at true panel size.
+    const image = scene.add.image(-TEX_PAD, -TEX_PAD, this.texKey).setOrigin(0, 0);
+    image.setScale(1 / TEX_RES);
     this.add(image);
 
     // Catch presses anywhere on the panel and route them to a key by hit-testing the rects.
@@ -214,6 +223,11 @@ export class OnScreenKeyboard extends Phaser.GameObjects.Container {
     const x = rect.cx - rect.w / 2 + PRESS_DX;
     const y = rect.cy - rect.h / 2 + PRESS_DY;
     this.pressG.clear();
+    // Opaque cover over the baked (unpressed) key AND its down-right shadow, so neither peeks
+    // out behind the shifted pressed face. A pressed key has no shadow in the original design,
+    // so blanking it here matches that look. White to blend into the near-white panel fill.
+    this.pressG.fillStyle(0xffffff, 1);
+    this.pressG.fillRoundedRect(rect.cx - rect.w / 2 -4, rect.cy - rect.h / 2 -4, rect.w + 4, rect.h + 5, KEY_RADIUS);
     this.pressG.fillStyle(PALETTE.yellow, 1);
     this.pressG.fillRoundedRect(x, y, rect.w, rect.h, KEY_RADIUS);
     this.pressG.lineStyle(3, PALETTE.ink, 1);
@@ -240,10 +254,11 @@ export class OnScreenKeyboard extends Phaser.GameObjects.Container {
     const scene = this.scene;
     const cw = Math.ceil(TEX_PAD + this.panelW + 10);
     const ch = Math.ceil(TEX_PAD + this.panelH + 10);
-    if (scene.textures.exists(TEX_KEY)) scene.textures.remove(TEX_KEY);
-    const tex = scene.textures.createCanvas(TEX_KEY, cw, ch)!;
+    if (scene.textures.exists(this.texKey)) scene.textures.remove(this.texKey);
+    const tex = scene.textures.createCanvas(this.texKey, cw * TEX_RES, ch * TEX_RES)!;
     const ctx = tex.context;
-    ctx.clearRect(0, 0, cw, ch);
+    ctx.clearRect(0, 0, cw * TEX_RES, ch * TEX_RES);
+    ctx.scale(TEX_RES, TEX_RES); // supersample for crisp high-DPI keys
     ctx.translate(TEX_PAD, TEX_PAD); // draw in panel-local space
 
     // Card-style panel: offset shadow, near-white fill, thick ink border.

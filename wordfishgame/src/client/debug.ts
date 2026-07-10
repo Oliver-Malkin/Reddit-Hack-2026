@@ -17,19 +17,6 @@ export function debugEnabled(): boolean {
 }
 
 /**
- * Debug-only layer switches read from the URL (e.g. `?debug&noshapes`). Used to attribute the
- * per-frame draw-call count to individual layers: disable one, tap-copy `draws/frame`, compare.
- * Known flags: nosquiggles, noshapes, nokeyboard, nochains. No-ops unless the flag is present.
- */
-export function debugFlag(name: string): boolean {
-  try {
-    return new URLSearchParams(window.location.search).has(name);
-  } catch {
-    return false;
-  }
-}
-
-/**
  * A rolling accumulator for per-frame samples. The whole point: on a phone webview
  * `performance.now()` is coarsened to ~1ms (no cross-origin isolation), so a single-frame
  * duration reads as 0, 1 or 2 ms and never anything in between. Averaging many frames'

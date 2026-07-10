@@ -11,13 +11,15 @@ export type GalleryRow = {
   right: string; // to
 };
 
+// Deliberately DIFFERENT words from the "How to Play" key (HelpPopup) so a player who
+// meets both gets two worked examples of every link type, not the same one twice.
 export const galleryRows: GalleryRow[] = [
-  { type: 'synonym', left: 'BIG', right: 'LARGE' },
-  { type: 'antonym', left: 'HOT', right: 'COLD' },
-  { type: 'hypernym', left: 'BIRD', right: 'ROBIN' }, // BIRD is the broader category (apex → ROBIN)
-  { type: 'anagram', left: 'LISTEN', right: 'SILENT' },
-  { type: 'meronym', left: 'PETAL', right: 'FLOWER' }, // PETAL is part of FLOWER
-  { type: 'lettersubset', left: 'CLAM', right: 'ACCLAIM' }, // C-L-A-M hide inside ACCLAIM
-  { type: 'sequence', left: 'TADPOLE', right: 'FROG' }, // TADPOLE grows into FROG
-  { type: 'rhyme', left: 'MOON', right: 'SPOON' },
+  { type: 'synonym', left: 'FAST', right: 'QUICK' },
+  { type: 'antonym', left: 'UP', right: 'DOWN' },
+  { type: 'hypernym', left: 'DOG', right: 'HUSKY' }, // DOG is the broader category (apex → HUSKY)
+  { type: 'anagram', left: 'EARTH', right: 'HEART' },
+  { type: 'meronym', left: 'WHEEL', right: 'CAR' }, // WHEEL is part of CAR
+  { type: 'lettersubset', left: 'CAT', right: 'SCATTER' }, // C-A-T hide inside SCATTER
+  { type: 'sequence', left: 'ACORN', right: 'OAK' }, // ACORN grows into OAK
+  { type: 'rhyme', left: 'BEE', right: 'TREE' },
 ];

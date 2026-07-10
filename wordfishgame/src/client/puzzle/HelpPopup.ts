@@ -8,7 +8,16 @@ type ExampleSeg =
   | { kind: 'op'; text: string }
   | { kind: 'sub'; text: string; mask: boolean[] };
 
-type KeyRow = { tex: string; name: string; meaning: string; example: ExampleSeg[] };
+type KeyRow = {
+  tex: string;
+  name: string;
+  meaning: string;
+  example: ExampleSeg[];
+  /** Mirror the key icon horizontally. The baked chevron points apex-right (at the narrower
+   *  word); when the example reads specific-first (e.g. "ROBIN is a BIRD"), the narrower word
+   *  is on the LEFT, so the chevron must point left to agree. */
+  flipIcon?: boolean;
+};
 
 /**
  * The lookup key: one row per link type, each with the exact chain texture the player
@@ -34,6 +43,8 @@ const KEY_ROWS: KeyRow[] = [
     name: 'Is a',
     meaning: 'One is a kind of the other',
     example: [{ kind: 'word', text: 'ROBIN' }, { kind: 'op', text: 'is a' }, { kind: 'word', text: 'BIRD' }],
+    // "ROBIN is a BIRD" reads specific→general, so the chevron points back at ROBIN.
+    flipIcon: true,
   },
   {
     tex: 'chain-mix',
@@ -50,7 +61,7 @@ const KEY_ROWS: KeyRow[] = [
   {
     tex: 'chain-into',
     name: 'Letters in',
-    meaning: "One's letters hide inside the other",
+    meaning: "One's letters hide inside the other, in order",
     // The letters of CLAM, highlighted where they appear inside ACCLAIM.
     example: [
       { kind: 'word', text: 'CLAM' },
@@ -334,6 +345,7 @@ export class HelpPopup extends Phaser.GameObjects.Container {
     if (scene.textures.exists(row.tex)) {
       const icon = scene.add.image(ICON / 2, rowH / 2, row.tex);
       icon.setDisplaySize(ICON, ICON);
+      if (row.flipIcon) icon.setFlipX(true);
       c.add(icon);
     }
     c.add([name, meaning, ex.container]);
