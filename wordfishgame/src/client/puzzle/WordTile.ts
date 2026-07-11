@@ -18,6 +18,10 @@ export type TileHost = {
   endTileDrag(tile: WordTile): void;
   tileSolved(tile: WordTile): void;
   playFx(name: TileFxName): void;
+  /** Optional: constrain a dragged tile's centre (e.g. keep it out of the keyboard band).
+   *  Hosts that skip it get the tile's own canvas-edge clamp, so a tile can never be
+   *  dragged off-screen and lost either way. */
+  clampTilePosition?(tile: WordTile, x: number, y: number): { x: number; y: number };
 };
 
 type Mode = 'idle' | 'pending' | 'dragging';
@@ -208,9 +212,32 @@ export class WordTile extends Phaser.GameObjects.Container {
     }
 
     if (this.mode === 'dragging') {
-      this.targetX = pointer.worldX + this.grabOffsetX;
-      this.targetY = pointer.worldY + this.grabOffsetY;
+      // Clamp the drag so a tile always stops at the canvas edge instead of leaving it —
+      // no more dragging a word off-screen and losing it (shuffle stays as a recovery,
+      // not a requirement). Hosts can tighten this (see TileHost.clampTilePosition).
+      const rawX = pointer.worldX + this.grabOffsetX;
+      const rawY = pointer.worldY + this.grabOffsetY;
+      const clamped = this.host.clampTilePosition
+        ? this.host.clampTilePosition(this, rawX, rawY)
+        : this.clampToCanvas(rawX, rawY);
+      this.targetX = clamped.x;
+      this.targetY = clamped.y;
     }
+  }
+
+  /** Fallback drag bounds: the tile stays fully on the canvas (small margin). If a tile is
+   *  somehow wider than the canvas, it pins to the centre on that axis rather than jamming
+   *  against one edge. */
+  private clampToCanvas(x: number, y: number): { x: number; y: number } {
+    const m = 8;
+    const W = this.scene.scale.width;
+    const H = this.scene.scale.height;
+    const halfW = (this.boxWidth / 2) * this.baseScale + m;
+    const halfH = (this.boxHeight / 2) * this.baseScale + m;
+    return {
+      x: halfW > W - halfW ? W / 2 : Phaser.Math.Clamp(x, halfW, W - halfW),
+      y: halfH > H - halfH ? H / 2 : Phaser.Math.Clamp(y, halfH, H - halfH),
+    };
   }
 
   pointerUp(pointer: Phaser.Input.Pointer) {

@@ -5,6 +5,7 @@ import { MenuScene } from './scenes/MenuScene';
 import { PuzzleScene } from './scenes/PuzzleScene';
 import { TutorialScene } from './scenes/TutorialScene';
 import { debugEnabled, mountDebugPanel } from './debug';
+import { primeBootPuzzle } from './puzzle/remote';
 
 // The Memphis-styled background scene auto-starts and launches the menu on top of itself;
 // the menu then launches the puzzle when a difficulty is chosen. Only the first scene in
@@ -132,9 +133,12 @@ const StartGame = (parent: string) => {
   return new Game({ ...config, parent });
 };
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   const dpr = effectiveDpr();
   enableCrispText(dpr);
+  // Resolve whether this post is a user-created puzzle BEFORE booting, so the menu opens
+  // straight to that puzzle's intro splash (no daily-menu flash). Best-effort + timed out.
+  await primeBootPuzzle();
   const game = StartGame('game-container');
   window.__game = game;
   // The renderer + scale manager exist once the game has booted; upgrade to hi-DPI then.

@@ -5,9 +5,12 @@ import { createDecorToggle } from '../puzzle/decorToggle';
 import { SoundFx } from '../puzzle/SoundFx';
 import { buildTitle, pickTitleStyle } from '../puzzle/titleStyles';
 import type { TitleStyle } from '../puzzle/titleStyles';
-import type { Difficulty } from '../puzzle/types';
+import type { Difficulty, Puzzle } from '../puzzle/types';
+import { openPuzzleEditor, showPuzzleEditor } from '../puzzle/editor/PuzzleEditor';
+import { getBootPuzzle } from '../puzzle/remote';
+import type { CustomPuzzle } from '../puzzle/remote';
 import type { BackgroundScene } from './BackgroundScene';
-import { slideCameraIn, transitionToPage, isTransitioning } from './pageTransition';
+import { slideCameraIn, transitionToPage, jumpToPage, isTransitioning } from './pageTransition';
 import type { PageEnterData } from './pageTransition';
 
 const MARGIN = 16;
@@ -37,6 +40,11 @@ export class MenuScene extends Phaser.Scene {
   // The title treatment for this appearance — re-rolled on first load and each return to
   // the menu, but held stable across resizes so a window drag doesn't reshuffle it.
   private titleStyle: TitleStyle = pickTitleStyle();
+  // The editor overlay is open — the menu underneath is inert until it closes.
+  private editorOpen = false;
+  // When this post is a user-created puzzle, the menu becomes that puzzle's intro splash
+  // (title + author + Play) instead of the daily menu. Resolved once at boot.
+  private customPuzzle: CustomPuzzle | null = getBootPuzzle();
 
   constructor() {
     super('MenuScene');
@@ -54,16 +62,31 @@ export class MenuScene extends Phaser.Scene {
     });
 
     // Returning from a page: reset, rebuild for the current size, and slide back in.
+    // No enterFrom means a page JUMP (editor preview round-trips) — snap into place
+    // instead, since those swaps happen behind the editor overlay and mustn't move.
     this.events.on(Phaser.Scenes.Events.WAKE, (_sys: unknown, data: Partial<PageEnterData>) => {
       this.transitioning = false;
       this.titleStyle = pickTitleStyle(); // a fresh title each time you come back
       this.render();
-      slideCameraIn(this, data?.enterFrom ?? 'left');
+      if (data?.enterFrom) slideCameraIn(this, data.enterFrom);
+      else this.cameras.main.setScroll(0, 0);
+      // Coming back from a preview: bring the (still-alive) editor overlay back on top,
+      // its form exactly as it was left.
+      if ((data as { reopenEditor?: boolean })?.reopenEditor) {
+        this.editorOpen = true;
+        showPuzzleEditor();
+      }
     });
   }
 
   /** Build (or rebuild) the whole menu sized to the current canvas. */
   private render() {
+    // A user-created puzzle post shows that puzzle's intro splash instead of the daily menu.
+    if (this.customPuzzle) {
+      this.renderCustomIntro(this.customPuzzle);
+      return;
+    }
+
     const W = this.scale.width;
     const H = this.scale.height;
     const cx = W / 2;
@@ -105,7 +128,7 @@ export class MenuScene extends Phaser.Scene {
     const headerH = 18;
     const dateH = 16;
     const groupH =
-      headerH + 4 + dateH + gapSection + btnH + gapBtn + btnH + gapSection + tutH;
+      headerH + 4 + dateH + gapSection + btnH + gapBtn + btnH + gapSection + tutH + gapBtn + tutH;
 
     const groupTop = y + 16 + Math.max(0, (H - (y + 16) - MARGIN - groupH) / 2);
     let gy = groupTop;
@@ -146,8 +169,20 @@ export class MenuScene extends Phaser.Scene {
       textColor: '#1c1c1c',
       onTap: () => this.openTutorial(),
     });
+    gy += tutH + gapBtn;
 
-    this.buttons = [easy, hard, tutorial];
+    // Secondary action: build and publish your own puzzle. Purple keeps it distinct from
+    // the daily buttons while staying in the Memphis palette.
+    const create = new MenuButton(this, cx, gy + tutH / 2, {
+      width: btnW,
+      height: tutH,
+      label: 'CREATE A PUZZLE',
+      fill: PALETTE.purple,
+      textColor: '#ffffff',
+      onTap: () => this.openEditor(),
+    });
+
+    this.buttons = [easy, hard, tutorial, create];
     this.root.add(this.buttons);
 
     // Clean-mode toggle in the top-right corner — shared with the puzzle (see decorToggle).
@@ -158,6 +193,101 @@ export class MenuScene extends Phaser.Scene {
 
     this.introTitle = [title];
     this.introTagline = [tagline, dots];
+  }
+
+  /**
+   * The intro splash for a user-created puzzle post: the WordFish brand, a "COMMUNITY PUZZLE"
+   * tag, the puzzle's title, its author (u/name), then PLAY straight into the board plus a
+   * HOW TO PLAY for first-timers. No daily menu — this post IS one puzzle.
+   */
+  private renderCustomIntro(custom: CustomPuzzle) {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const cx = W / 2;
+    this.root.removeAll(true);
+    this.buttons = [];
+
+    // Brand title, a touch smaller than the daily menu's so the puzzle title has room.
+    const titleTop = Phaser.Math.Clamp(H * 0.12, 48, 118);
+    const titleSize = Phaser.Math.Clamp(Math.round(W * 0.11), 40, 84);
+    const title = buildTitle(this, cx, titleTop, titleSize, this.titleStyle);
+    this.root.add(title);
+    const titleHalfH = (title.getData('halfHeight') as number) ?? titleSize / 2;
+    let y = titleTop + titleHalfH + 14;
+
+    const tag = this.text(cx, y, 'COMMUNITY PUZZLE', Phaser.Math.Clamp(Math.round(W * 0.026), 12, 16), '900', '#ff2f8f');
+    tag.setLetterSpacing(3);
+    y += tag.height + 10;
+
+    const dots = this.add.graphics();
+    ACCENT_DOTS.forEach((c, i) => {
+      dots.fillStyle(c, 1);
+      dots.fillCircle(cx + (i - 1) * 18, y, 4);
+    });
+    this.root.add(dots);
+    y += 18;
+
+    // ---- Lower group: puzzle title + author + Play + How to play, vertically centred. ----
+    const btnW = Phaser.Math.Clamp(Math.round(W * 0.74), 220, 330);
+    const btnH = Phaser.Math.Clamp(Math.round(H * 0.09), 56, 72);
+    const tutH = Math.round(btnH * 0.78);
+    const gapBtn = 16;
+
+    // Fit the (untrusted-length) title: shrink for long titles, wrap as a last resort.
+    const rawTitle = custom.title.toUpperCase();
+    const titleFont = Phaser.Math.Clamp(Math.round(W * 0.085), 22, rawTitle.length > 16 ? 30 : 44);
+    const puzzleTitle = this.add.text(cx, 0, rawTitle, {
+      fontFamily: UI_FONT,
+      fontSize: `${titleFont}px`,
+      fontStyle: '900',
+      color: '#1c1c1c',
+      align: 'center',
+      wordWrap: { width: W - 48, useAdvancedWrap: true },
+    });
+    puzzleTitle.setOrigin(0.5);
+
+    const author = this.text(cx, 0, `by u/${custom.author}`, Phaser.Math.Clamp(Math.round(W * 0.03), 13, 18), '700', '#2b2d6e');
+
+    const groupH = puzzleTitle.height + 10 + author.height + 24 + btnH + gapBtn + tutH;
+    const groupTop = y + Math.max(0, (H - y - MARGIN - groupH) / 2);
+    let gy = groupTop;
+
+    puzzleTitle.setY(gy + puzzleTitle.height / 2);
+    this.root.add(puzzleTitle);
+    gy += puzzleTitle.height + 10;
+    author.setY(gy + author.height / 2);
+    gy += author.height + 24;
+
+    const play = new MenuButton(this, cx, gy + btnH / 2, {
+      width: btnW,
+      height: btnH,
+      label: '▶ PLAY',
+      fill: PALETTE.cyan,
+      textColor: '#1c1c1c',
+      onTap: () => this.startCustomPuzzle(custom.puzzle),
+    });
+    gy += btnH + gapBtn;
+
+    const tutorial = new MenuButton(this, cx, gy + tutH / 2, {
+      width: btnW,
+      height: tutH,
+      label: 'HOW TO PLAY',
+      fill: 0xffffff,
+      textColor: '#1c1c1c',
+      onTap: () => this.openTutorial(),
+    });
+
+    this.buttons = [play, tutorial];
+    this.root.add(this.buttons);
+
+    // Clean-mode toggle, shared with the puzzle, in the top-right corner.
+    const r = 20;
+    const decor = createDecorToggle(this, () => this.sfx.tap());
+    decor.setPosition(W - (16 + 4 + r), 16 + 4 + r);
+    this.root.add(decor);
+
+    this.introTitle = [title];
+    this.introTagline = [tag, dots, puzzleTitle, author];
   }
 
   /** Springy first-load reveal: title drops in, buttons pop up staggered. Only on boot —
@@ -191,6 +321,39 @@ export class MenuScene extends Phaser.Scene {
 
   private openTutorial() {
     this.openPage('TutorialScene', {}, () => this.sfx.tap());
+  }
+
+  /** Open the DOM puzzle-creator overlay on top of the (inert) menu. */
+  private openEditor() {
+    if (this.editorOpen || this.transitioning || isTransitioning()) return;
+    this.editorOpen = true;
+    this.sfx.tap();
+    for (const b of this.buttons) b.setEnabled(false);
+    openPuzzleEditor({
+      onClose: () => {
+        this.editorOpen = false;
+        for (const b of this.buttons) b.setEnabled(true);
+      },
+      onPreview: (puzzle) => {
+        // Preview the freshly built puzzle in the real board. The editor stays alive so the
+        // board's back arrow can return to this exact form — editorOpen stays true. The swap
+        // is a JUMP, not a slide: it happens under the still-covering overlay, which then
+        // fades out to reveal the board already in place (no menu flash, no visible sweep).
+        if (this.transitioning || isTransitioning()) return;
+        this.sfx.drop();
+        const bg = this.scene.get('BackgroundScene') as BackgroundScene;
+        jumpToPage(this, 'PuzzleScene', { puzzle, preview: true }, bg.parallaxOffset());
+      },
+    });
+  }
+
+  /** Play this post's custom puzzle from its intro splash, handing the board the puzzle's
+   *  title/author/url so its win screen can build a proper "I solved u/x's puzzle" share. */
+  private startCustomPuzzle(puzzle: Puzzle) {
+    const c = this.customPuzzle;
+    const data: Record<string, unknown> = { puzzle };
+    if (c) data.customMeta = { title: c.title, author: c.author, url: c.url };
+    this.openPage('PuzzleScene', data, () => this.sfx.drop());
   }
 
   /** Hand off to another page (puzzle / tutorial): sweep this menu off to the left while the

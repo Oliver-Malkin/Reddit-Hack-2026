@@ -158,6 +158,10 @@ export class BackgroundScene extends Phaser.Scene {
   panParallaxTo(scrollX: number, duration = 640) {
     const cam = this.cameras.main;
     this.tweens.killTweensOf(cam);
+    if (duration <= 0) {
+      cam.scrollX = scrollX; // snap (page jumps) — a 0ms tween would land a frame late
+      return;
+    }
     this.tweens.add({
       targets: cam,
       scrollX,

@@ -71,6 +71,30 @@ export function isTransitioning(): boolean {
 }
 
 /**
+ * Swap pages instantly — no slide. Used when a full-screen DOM overlay (the puzzle editor)
+ * covers the canvas: the destination must simply BE there when the overlay lifts, because
+ * any sliding menu glimpsed beneath a fading overlay reads as a glitch. The incoming page
+ * gets no `enterFrom`, which every page treats as "snap into place".
+ */
+export function jumpToPage(
+  from: Phaser.Scene,
+  toKey: string,
+  data: Record<string, unknown>,
+  parallax: number
+) {
+  if (busy) return;
+  const mgr = from.scene;
+  mgr.bringToTop(toKey);
+  if (mgr.isSleeping(toKey)) mgr.wake(toKey, data);
+  else mgr.launch(toKey, data);
+
+  const bg = mgr.get('BackgroundScene') as BackgroundScene;
+  bg.panParallaxTo(parallax, 0); // snap — nothing should visibly move during a jump
+
+  mgr.sleep();
+}
+
+/**
  * Transition from `from` to the page `toKey`. `from` slides out toward `exitDir` and is
  * put to sleep; `toKey` is woken (or launched the first time) on top, sliding in from the
  * opposite edge, and the background pans to `parallax`.

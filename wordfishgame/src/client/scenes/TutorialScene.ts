@@ -317,35 +317,35 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
     switch (key) {
       case 'intro':
         return {
-          text: 'Welcome! Every puzzle is a little web of linked words. A few are missing — and the links tell you what they are.',
+          text: 'Welcome to WordFish! Every puzzle is a little web of linked words. Some words are missing, and the links help tell you what they are.\n\nYou can click and drag these tutorial boxes around to see behind them.',
           progress,
           buttons: [skip, next],
         };
       case 'hidden':
         return {
           // First gameplay beat: what you're doing, and how the ?s tell you the length.
-          text: 'Your job is to work out the hidden words from the ones around them. Each ? is one letter — so this mystery word is five letters long.',
+          text: 'Your job is to figure out the hidden words from the given information. Firstly, each ? is one letter, so this mystery word is five letters long.',
           target: () => this.tileRect('happy'),
           progress,
           buttons: [skip, back, next],
         };
       case 'tile':
         return {
-          text: 'Everything here is a word tile. Drag them around to see how they connect — or just to nudge them out of your way.',
+          text: 'These are "word tiles". You can drag them around to see how they connect, or to move them out of the way.',
           target: () => this.tileRect('sad'),
           progress,
           buttons: [skip, back, next],
         };
       case 'antonym':
         return {
-          text: 'The chains show how two words relate. This one is an antonym — the words at its ends are opposites. No arrow, so it reads both ways.',
+          text: 'The chains show how two words relate. This one here is an antonym chain - the words connected by it are opposites.',
           target: () => this.chainRect(this.antonymChain, 'sad', 'happy'),
           progress,
           buttons: [skip, back, next],
         };
       case 'isa':
         return {
-          text: "This chain points somewhere: it means 'is a', and the arrow aims at the more specific word. So the hidden word is a kind of emotion.",
+          text: "This chain has a direction; it means 'is a', and the arrow aims at the more specific word. So the hidden word is a kind of emotion.",
           target: () => this.chainRect(this.hypernymChain, 'emotion', 'happy'),
           progress,
           buttons: [skip, back, next],
@@ -353,7 +353,7 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
       case 'controls':
         return {
           // Introduce the real in-game controls, and nudge them to open the link key.
-          text: 'These helpers live up here. Tap ? to see every kind of link — there are lots more than these two. Shuffle gathers your tiles back in, and BG hides the drifting background.',
+          text: 'Up here are some useful buttons. BG hides the drifting background elements, ? lets you see every kind of link (there are 8 overall), and the shuffle button rearranges your tiles.',
           target: () => this.controlsRect(),
           progress,
           buttons: [skip, back, next],
@@ -361,7 +361,7 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
       case 'solve':
         return {
           // Letters/?s were covered back in 'hidden' — just a quick recap of the clues here.
-          text: 'So: the opposite of SAD, a kind of emotion, five letters. Tap the tile and type your answer. Feel free to poke around — drag the tiles, or this box, to see what is behind them.',
+          text: 'So, our hidden word is the opposite of SAD, a kind of EMOTION, and five letters long. Tap the tile and type your answer!',
           target: () => this.tileRect('happy'),
           progress,
           dim: false, // let them explore the whole board freely
@@ -381,9 +381,9 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
   private doneText(): string {
     if (this.skipped) return "That's the gist — use the links to work out the missing words. Good luck!";
     if (this.lastSolvedWith && this.lastSolvedWith !== ANSWER) {
-      return `Nice — ${this.lastSolvedWith} fits too! Puzzles are meant to have a single answer and we try to keep it that way, but you found a sneaky spare. ${ANSWER} was the one we meant — well spotted. Good luck out there!`;
+      return `Sneaky! ${this.lastSolvedWith} fits too!\n\nPuzzles are usually meant to have a single answer, but we left this in as an Easter Egg. Seems like you've mastered it; good luck out there!`;
     }
-    return "Nailed it — that's all there is to it! Use the links to fill in every hidden word and the puzzle is yours. Good luck!";
+    return "Well done! The word was HAPPY. That's all there is to it - use the links to fill in every hidden word (sometimes there are multiple) and you win.\n\nGood luck!";
   }
 
   /** Spotlight rect around a tile (screen = world here, camera rests at 0 once slid in). */

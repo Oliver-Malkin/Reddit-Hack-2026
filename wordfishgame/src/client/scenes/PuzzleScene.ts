@@ -14,15 +14,25 @@ import type { Difficulty, Puzzle } from '../puzzle/types';
 import { PALETTE } from '../theme';
 import { debugEnabled, perf } from '../debug';
 import { copyText } from '../clipboard';
+import { showPuzzleEditor } from '../puzzle/editor/PuzzleEditor';
 import { BackgroundScene } from './BackgroundScene';
-import { slideCameraIn, transitionToPage, isTransitioning } from './pageTransition';
+import { slideCameraIn, transitionToPage, jumpToPage, isTransitioning } from './pageTransition';
 import type { PageEnterData } from './pageTransition';
 
 /** 'gallery' shows one row per link type for design review; 'puzzle' plays a daily puzzle. */
 const MODE: 'gallery' | 'puzzle' = 'puzzle';
 
-/** Data the puzzle is launched/woken with: which edge to slide in from + which puzzle. */
-type PuzzleEnterData = Partial<PageEnterData> & { difficulty?: Difficulty };
+/** Data the puzzle is launched/woken with: which edge to slide in from + which puzzle.
+ *  `puzzle` (a user-created / previewed puzzle) takes precedence over `difficulty` (which
+ *  selects one of the built-in dailies). `preview` marks an in-editor preview, so the
+ *  top-left control returns to the creator's form rather than the home menu. */
+type PuzzleEnterData = Partial<PageEnterData> & {
+  difficulty?: Difficulty;
+  puzzle?: Puzzle;
+  preview?: boolean;
+  /** For a published community puzzle: its title/author/url, used by the win-share text. */
+  customMeta?: { title: string; author: string; url: string };
+};
 
 /** When the debug HUD is on, attribute per-frame time to tiles vs. chains. */
 const PERF = debugEnabled();
@@ -56,6 +66,11 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
   private currentPuzzle: Puzzle = activePuzzle;
   private currentDifficulty: Difficulty = 'easy';
   private solvedHidden = new Set<string>();
+  // True when this board is an in-editor preview (back arrow → creator's form, not the menu).
+  private isPreview = false;
+  private previewBadge: Phaser.GameObjects.Text | null = null;
+  // Set when playing a published community puzzle — drives the win-share text.
+  private customMeta: { title: string; author: string; url: string } | null = null;
   // True while a page transition is playing — input is locked so it can't be interrupted.
   private transitioning = false;
   // Shared layout state, set by recomputeLayoutMetrics() and read by the clamps below.
@@ -107,8 +122,18 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     this.cleanButton?.setFace((f) => drawDecorGlyph(f, bg.isDecorHidden()));
     this.keyboard?.setMinimized(false);
 
+    // Preview vs. daily: the top-left control is a back arrow (→ form) in preview, else the
+    // home glyph (→ menu). A "PREVIEW" badge makes it obvious this puzzle isn't published.
+    this.isPreview = data?.preview ?? false;
+    this.customMeta = data?.customMeta ?? null;
+    this.backButton?.setGlyph((g) =>
+      this.isPreview ? this.drawBackArrowGlyph(g) : this.drawHomeGlyph(g)
+    );
+    this.updatePreviewBadge();
+
     this.clearBoard();
     if (MODE === 'gallery') this.buildGallery();
+    else if (data?.puzzle) this.loadCustomPuzzle(data.puzzle);
     else this.loadPuzzle(data?.difficulty ?? 'easy');
     // Let each chain's rope push away from the others so lines stay separate.
     for (const chain of this.chains) chain.setPeers(this.chains);
@@ -123,6 +148,14 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     this.currentDifficulty = difficulty;
     this.currentPuzzle = puzzleForDifficulty(difficulty);
     this.buildPuzzle(this.currentPuzzle);
+  }
+
+  /** Build a user-created / previewed puzzle onto the (already cleared) board. Difficulty
+   *  is treated as 'easy' for share/recap purposes since custom puzzles aren't graded. */
+  private loadCustomPuzzle(puzzle: Puzzle) {
+    this.currentDifficulty = 'easy';
+    this.currentPuzzle = puzzle;
+    this.buildPuzzle(puzzle);
   }
 
   /** Destroy every tile and chain so the board can be rebuilt (difficulty change / re-entry). */
@@ -182,7 +215,7 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
    *  away from the tools); shuffle, help and clean-mode form the top-RIGHT cluster. */
   private buildControls() {
     const back = new IconButton(this, 0, 0, {
-      onTap: () => this.returnToMenu(),
+      onTap: () => this.onBackTap(),
       draw: (g) => this.drawHomeGlyph(g),
     });
     const shuffle = new IconButton(this, 0, 0, {
@@ -202,6 +235,12 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     this.buttons = [shuffle, help, clean];
   }
 
+  /** Top-left control: back to the creator's form in preview, else home to the menu. */
+  private onBackTap() {
+    if (this.isPreview) this.returnToEditor();
+    else this.returnToMenu();
+  }
+
   /** Return to the main menu: this board slides off to the right while the menu slides in
    *  from the left, and the background parallax settles back to its resting view. */
   private returnToMenu() {
@@ -210,6 +249,39 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     this.sfx.tap();
     for (const b of this.allButtons()) b.setEnabled(false);
     transitionToPage(this, 'MenuScene', {}, 'right', 0);
+  }
+
+  /** From a preview, return to the still-alive editor form. The overlay is revealed first
+   *  (instantly, covering everything), then the board→menu swap JUMPS behind it — sliding
+   *  pages under a full-screen overlay would only be glimpsed as a glitch. */
+  private returnToEditor() {
+    if (this.transitioning || this.modalOpen || isTransitioning()) return;
+    if (!showPuzzleEditor()) {
+      // No live editor (shouldn't happen in preview) — fall back to the menu.
+      this.returnToMenu();
+      return;
+    }
+    this.transitioning = true;
+    this.sfx.tap();
+    jumpToPage(this, 'MenuScene', { reopenEditor: true }, 0);
+  }
+
+  /** Create/destroy the small "PREVIEW" badge to match the current mode; positioned in
+   *  positionButtons(). */
+  private updatePreviewBadge() {
+    this.previewBadge?.destroy();
+    this.previewBadge = null;
+    if (!this.isPreview) return;
+    const badge = this.add.text(0, 0, 'PREVIEW', {
+      fontFamily: '"Arial Black", Arial, sans-serif',
+      fontSize: '13px',
+      fontStyle: '900',
+      color: '#ffffff',
+      backgroundColor: '#2b2d6e',
+      padding: { left: 10, right: 10, top: 5, bottom: 5 },
+    });
+    badge.setOrigin(0.5).setDepth(80).setLetterSpacing(2);
+    this.previewBadge = badge;
   }
 
   /** A simple house outline — the back-to-menu glyph. */
@@ -228,6 +300,17 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     g.strokePath();
     // Door.
     g.strokeRect(-2, 3, 4, 6);
+  }
+
+  /** A left-pointing arrow — the preview "back to editor" glyph. */
+  private drawBackArrowGlyph(g: Phaser.GameObjects.Graphics) {
+    g.lineStyle(3, PALETTE.ink, 1);
+    g.lineBetween(-9, 0, 9, 0); // shaft
+    g.beginPath();
+    g.moveTo(-2, -7); // upper barb
+    g.lineTo(-9, 0); // tip
+    g.lineTo(-2, 7); // lower barb
+    g.strokePath();
   }
 
   /** Two arrows crossing — the standard shuffle symbol. */
@@ -370,6 +453,8 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     });
     // Back-to-menu button alone in the top-left corner.
     this.backButton?.setPosition(inset, y);
+    // "PREVIEW" badge sits centred alongside the top controls.
+    this.previewBadge?.setPosition(W / 2, y);
   }
 
   /** Place tiles at their default slots + position the corner controls. `snap` puts
@@ -524,10 +609,11 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
   }
 
   /**
-   * The share blurb: two short lines that give away nothing about the answers, name where
-   * to play (the subreddit), and tee up the daily-streak hook. A creature per hidden word
-   * stands in for what was solved. Kept brief on purpose — a wall of identical text pasted
-   * into every comment is what reads as spam.
+   * The share blurb: two short spoiler-free lines with a creature per hidden word (a tally of
+   * what was caught, giving nothing away), and a link to play. For a community puzzle it
+   * credits the author and links straight to that post; for the daily it points at the
+   * subreddit and teases the streak. Kept brief on purpose — a wall of identical pasted text
+   * is what reads as spam.
    */
   private buildShareText(): string {
     const hiddenCount = this.currentPuzzle.words.filter((w) => w.hidden).length;
@@ -535,6 +621,26 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
       { length: Math.max(1, hiddenCount) },
       (_, i) => PuzzleScene.HIDDEN_ICONS[i % PuzzleScene.HIDDEN_ICONS.length]
     ).join('');
+
+    // Solving your own not-yet-published puzzle in the editor's preview isn't the daily —
+    // don't claim a daily catch (or leak a wrong difficulty) in the copied text.
+    if (this.isPreview) {
+      return (
+        `Test-caught ${catch_} in a WordFish puzzle I'm building!\n` +
+        `Make your own at r/wordfishgame`
+      );
+    }
+
+    if (this.customMeta) {
+      const where = this.customMeta.url
+        ? `Play it → ${this.customMeta.url}`
+        : 'Find it at r/wordfishgame';
+      return (
+        `I caught ${catch_} in u/${this.customMeta.author}'s WordFish "${this.customMeta.title}"!\n` +
+        where
+      );
+    }
+
     const difficulty = this.currentDifficulty === 'hard' ? 'Hard' : 'Easy';
     return (
       `Today's Wordfish (${difficulty}) — ${catch_} caught!\n` +
@@ -560,6 +666,12 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
   }
 
   endTileDrag(_tile: WordTile) {}
+
+  /** Drag bounds: same clamps the layout uses, so a dragged tile stays fully on canvas AND
+   *  above the keyboard band — it can't be lost off an edge or parked under the keys. */
+  clampTilePosition(tile: WordTile, x: number, y: number): { x: number; y: number } {
+    return { x: this.clampX(tile, x), y: this.clampY(tile, y) };
+  }
 
   playFx(name: TileFxName) {
     this.sfx[name]();
