@@ -619,15 +619,18 @@ export class Chain {
       ctx.stroke();
     });
 
-    // Hypernym — chevron ">" pointing +x (apex → the hyponym). Yellow variant outlined.
+    // Hypernym — "<"/">" (apex → the hyponym, mouth open toward the hypernym it's read as
+    // containing — the inequality-symbol mnemonic). Opened wider than a typical arrowhead
+    // chevron so a row of these reads as repeated size comparisons rather than a stream of
+    // forward-arrows. Yellow variant outlined.
     const chevron = (color: string | null) => (ctx: CanvasRenderingContext2D) => {
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       const path = () => {
         ctx.beginPath();
-        ctx.moveTo(-5.5, -8.5);
-        ctx.lineTo(7, 0);
-        ctx.lineTo(-5.5, 8.5);
+        ctx.moveTo(-4.5, -9.5);
+        ctx.lineTo(6, 0);
+        ctx.lineTo(-4.5, 9.5);
       };
       path();
       ctx.lineWidth = color ? 8 : 5.5;
