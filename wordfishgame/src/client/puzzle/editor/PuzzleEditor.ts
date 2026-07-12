@@ -34,6 +34,9 @@ type LinkDraft = { id: string; type: LinkType; from: string; to: string };
 
 const STYLE_ID = 'wf-editor-style';
 
+/** Board layout assumes a small chain — beyond this the puzzle gets unreadably cramped. */
+const MAX_WORDS = 6;
+
 // The single live editor. Kept alive (hidden) while previewing so the form's contents
 // survive a trip to the board and back.
 let liveEditor: PuzzleEditor | null = null;
@@ -93,6 +96,10 @@ class PuzzleEditor {
 
     this.q('.wf-back').addEventListener('click', () => this.close());
     this.q('.wf-add-word').addEventListener('click', () => {
+      if (this.words.length >= MAX_WORDS) {
+        this.showError(`A puzzle can have at most ${MAX_WORDS} words.`);
+        return;
+      }
       this.words.push(this.newWord(false));
       this.renderWords();
       this.renderLinks();
@@ -165,6 +172,10 @@ class PuzzleEditor {
 
   private renderWords() {
     this.wordListEl.replaceChildren(...this.words.map((w, i) => this.wordRow(w, i)));
+    const addBtn = this.q<HTMLButtonElement>('.wf-add-word');
+    const atCap = this.words.length >= MAX_WORDS;
+    addBtn.disabled = atCap;
+    addBtn.textContent = atCap ? `MAX ${MAX_WORDS} WORDS` : '+ ADD WORD';
   }
 
   private wordRow(word: WordDraft, index: number): HTMLElement {
@@ -312,6 +323,7 @@ class PuzzleEditor {
   private buildPuzzle(): { ok: true; puzzle: Puzzle } | { ok: false; message: string } {
     const words = this.words.map((w) => ({ ...w, text: w.text.trim() }));
     if (words.length < 2) return fail('Add at least two words.');
+    if (words.length > MAX_WORDS) return fail(`A puzzle can have at most ${MAX_WORDS} words.`);
     for (const w of words) {
       if (w.text.length === 0) return fail('Every word needs some text.');
       if (!/^[A-Z]+$/.test(w.text)) return fail(`"${w.text || '?'}" must be letters only.`);
@@ -618,6 +630,8 @@ function injectStyle() {
       padding: 11px; width: 100%; cursor: pointer; margin-top: 2px;
     }
     .wf-add:active { transform: translate(1px, 2px); }
+    .wf-add:disabled { opacity: .55; cursor: default; }
+    .wf-add:disabled:active { transform: none; }
 
     .wf-empty { font-size: 12px; font-weight: 700; color: #8a8577; padding: 4px 2px 10px; }
     .wf-note { font-size: 12px; font-weight: 700; color: #8a8577; margin: -2px 0 10px; }
