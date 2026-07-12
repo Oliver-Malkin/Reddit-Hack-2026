@@ -1,0 +1,7 @@
+# These are maintainer-only vetting artifacts that contain full puzzle ANSWERS in plain
+# text. None of this is ever served by the deployed app (the Devvit build only bundles
+# src/client — this directory isn't part of it), but they also have no reason to sit in
+# a public repo spoiling every upcoming daily puzzle. Keep them local.
+review.html
+report.txt
+accepted.json

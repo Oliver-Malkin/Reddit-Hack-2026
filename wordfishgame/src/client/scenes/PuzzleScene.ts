@@ -8,6 +8,7 @@ import { createDecorToggle, drawDecorGlyph } from '../puzzle/decorToggle';
 import { HelpPopup } from '../puzzle/HelpPopup';
 import { SoundFx } from '../puzzle/SoundFx';
 import { WinPopup } from '../puzzle/WinPopup';
+import { scatterHomes } from '../puzzle/scatter';
 import { activePuzzle, puzzleForDifficulty } from '../puzzle/puzzles';
 import { galleryRows } from '../puzzle/gallery';
 import type { Difficulty, Puzzle } from '../puzzle/types';
@@ -241,10 +242,19 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     else this.returnToMenu();
   }
 
+  /** Home is always available — if the help sheet is up, close it first so navigating out
+   *  never gets swallowed by an open modal. */
+  private closeHelp() {
+    if (!this.help) return;
+    this.help.destroy();
+    this.help = null;
+  }
+
   /** Return to the main menu: this board slides off to the right while the menu slides in
    *  from the left, and the background parallax settles back to its resting view. */
   private returnToMenu() {
-    if (this.transitioning || this.modalOpen || isTransitioning()) return;
+    if (this.transitioning || isTransitioning()) return;
+    this.closeHelp();
     this.transitioning = true;
     this.sfx.tap();
     for (const b of this.allButtons()) b.setEnabled(false);
@@ -255,7 +265,8 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
    *  (instantly, covering everything), then the board→menu swap JUMPS behind it — sliding
    *  pages under a full-screen overlay would only be glimpsed as a glitch. */
   private returnToEditor() {
-    if (this.transitioning || this.modalOpen || isTransitioning()) return;
+    if (this.transitioning || isTransitioning()) return;
+    this.closeHelp();
     if (!showPuzzleEditor()) {
       // No live editor (shouldn't happen in preview) — fall back to the menu.
       this.returnToMenu();
@@ -346,30 +357,21 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
   }
 
   /**
-   * Randomly re-arrange the tiles. This is the escape hatch for dragging a tile off
-   * the canvas (you can't lose it), and doubles as a fresh look at the layout: it
-   * takes the current on-screen slots, shuffles which tile goes to which, and adds a
-   * little jitter — so everything is always brought safely back on-screen.
+   * Fling every tile to a fresh RANDOM position across the play area (see scatterHomes).
+   * This is the escape hatch for dragging a tile off the canvas (you can't lose it) and
+   * doubles as a fresh look at the board: the spots are random but spread out, so tiles land
+   * scattered-but-readable rather than piled up, and always safely back on-screen.
    */
   private shuffleTiles() {
     if (this.tileList.length === 0 || this.modalOpen) return;
     this.recomputeLayoutMetrics();
-    const slots = this.computeSlots();
-
-    // Fisher–Yates on the slot order.
-    const order = slots.map((_, i) => i);
-    for (let i = order.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [order[i], order[j]] = [order[j]!, order[i]!];
-    }
-
-    const W = this.scale.width;
-    this.tileList.forEach((tile, i) => {
-      const slot = slots[order[i]!]!;
-      const jx = Phaser.Math.FloatBetween(-W * 0.05, W * 0.05);
-      const jy = Phaser.Math.FloatBetween(-24, 24);
-      tile.setHome(this.clampX(tile, slot.x + jx), this.clampY(tile, slot.y + jy));
+    const homes = scatterHomes(this.tileList, {
+      width: this.scale.width,
+      bottom: this.playBottom,
+      scale: this.tileScale,
+      margin: LAYOUT_MARGIN,
     });
+    this.tileList.forEach((tile, i) => tile.setHome(homes[i]!.x, homes[i]!.y));
     this.sfx.drop();
   }
 

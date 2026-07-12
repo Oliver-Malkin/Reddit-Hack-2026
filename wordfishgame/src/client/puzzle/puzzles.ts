@@ -1,4 +1,5 @@
 import type { Difficulty, Puzzle } from './types';
+import { easyPuzzles, hardPuzzles } from './puzzleBank';
 
 /** DOG ⊃ (HUSKY) = RASPY — the hidden middle word links both clues. */
 export const dogPuzzle: Puzzle = {
@@ -89,9 +90,19 @@ export const grievePuzzle: Puzzle = {
   ],
 };
 
-/** Today's puzzle for a given difficulty. */
+/** UTC day number — everyone worldwide flips to the next puzzle at the same moment. */
+const dayNumber = () => Math.floor(Date.now() / 86_400_000);
+
+/**
+ * Today's puzzle for a given difficulty, drawn from the generated bank
+ * (see scripts/puzzlegen). The bank is pre-shuffled, so stepping through it by day
+ * gives varied puzzles with no repeats until the whole bank has been played.
+ * Falls back to the handcrafted puzzles if a bank is ever empty.
+ */
 export function puzzleForDifficulty(difficulty: Difficulty): Puzzle {
-  return difficulty === 'hard' ? grievePuzzle : applePuzzle;
+  const bank = difficulty === 'hard' ? hardPuzzles : easyPuzzles;
+  const daily = bank[dayNumber() % Math.max(bank.length, 1)];
+  return daily ?? (difficulty === 'hard' ? grievePuzzle : applePuzzle);
 }
 
 /** Fallback puzzle when the scene is booted directly (e.g. debugging) with no difficulty. */

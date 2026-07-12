@@ -5,7 +5,9 @@ import { MenuScene } from './scenes/MenuScene';
 import { PuzzleScene } from './scenes/PuzzleScene';
 import { TutorialScene } from './scenes/TutorialScene';
 import { debugEnabled, mountDebugPanel } from './debug';
-import { primeBootPuzzle } from './puzzle/remote';
+import { primeBootPuzzle, getPreviewPuzzleFromUrl } from './puzzle/remote';
+import { effectiveDpr } from './hidpi';
+import type { Puzzle } from './puzzle/types';
 
 // The Memphis-styled background scene auto-starts and launches the menu on top of itself;
 // the menu then launches the puzzle when a difficulty is chosen. Only the first scene in
@@ -29,25 +31,6 @@ declare global {
   interface Window {
     __game?: Game;
   }
-}
-
-/**
- * The device pixel ratio to render at, capped at 2. A phone reports up to ~3–4; rendering the
- * buffer at the FULL ratio would cost dpr² the fragment fill and can cost more FPS than the
- * crispness is worth. Capping at 2 removes essentially all of the visible blur (a 1× buffer is
- * the culprit) while keeping the fill bounded. `?hidpi=N` forces a value (including 1, to turn
- * the whole thing off) for testing on any screen.
- */
-function effectiveDpr(): number {
-  let forced = NaN;
-  try {
-    const p = new URLSearchParams(window.location.search).get('hidpi');
-    if (p) forced = parseFloat(p);
-  } catch {
-    /* no search params (e.g. inside some webviews) — fall through to the real dpr */
-  }
-  const dpr = Number.isFinite(forced) && forced > 0 ? forced : window.devicePixelRatio || 1;
-  return Math.min(Math.max(dpr, 1), 2);
 }
 
 /**
@@ -133,15 +116,47 @@ const StartGame = (parent: string) => {
   return new Game({ ...config, parent });
 };
 
+/**
+ * `?previewPuzzle=<encodeURIComponent(JSON)>` jumps straight into PuzzleScene with that
+ * puzzle, skipping the menu entirely — the puzzlegen review tool (see
+ * scripts/puzzlegen/review.html) uses this to let a curator see a generated chain
+ * rendered as an actual board, not just its text description. Mirrors jumpToPage's
+ * bring-to-top/launch/sleep sequence (see scenes/pageTransition.ts) but driven from boot
+ * instead of a menu tap, since there's no "from" scene yet to jump from.
+ */
+function bootDirectlyIntoPreview(game: Game, puzzle: Puzzle) {
+  const scenes = game.scene;
+  scenes.bringToTop('PuzzleScene');
+  // SceneManager's `run` is the launch-or-wake-as-appropriate op (`launch` is a
+  // ScenePlugin-only convenience wrapper around it, not available on the manager itself).
+  scenes.run('PuzzleScene', { puzzle, preview: true });
+
+  // BackgroundScene.create() unconditionally calls `this.scene.launch('MenuScene')`,
+  // which only QUEUES the launch — the scene manager doesn't actually start it until
+  // its next queue-processing pass, so sleeping it synchronously here races that queue
+  // (harmless — sleep() on a not-yet-running scene just warns and no-ops — but the
+  // warning is real noise, worth doing properly). Rather than guess how long that takes,
+  // listen for MenuScene's own CREATE event (fired once, right after ITS create() runs)
+  // and sleep it then; sleep immediately too, in case it's already running by now.
+  const menu = scenes.getScene('MenuScene');
+  menu?.events.once(Phaser.Scenes.Events.CREATE, () => scenes.sleep('MenuScene'));
+  if (scenes.isActive('MenuScene')) scenes.sleep('MenuScene');
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   const dpr = effectiveDpr();
   enableCrispText(dpr);
+  const previewPuzzle = getPreviewPuzzleFromUrl();
   // Resolve whether this post is a user-created puzzle BEFORE booting, so the menu opens
   // straight to that puzzle's intro splash (no daily-menu flash). Best-effort + timed out.
-  await primeBootPuzzle();
+  // Skipped entirely for a URL-supplied preview puzzle — that flow bypasses the menu anyway.
+  if (!previewPuzzle) await primeBootPuzzle();
   const game = StartGame('game-container');
   window.__game = game;
   // The renderer + scale manager exist once the game has booted; upgrade to hi-DPI then.
-  game.events.once(Phaser.Core.Events.READY, () => enableHiDpiRendering(game, dpr));
+  game.events.once(Phaser.Core.Events.READY, () => {
+    enableHiDpiRendering(game, dpr);
+    if (previewPuzzle) bootDirectlyIntoPreview(game, previewPuzzle);
+  });
   if (debugEnabled()) mountDebugPanel(game);
 });

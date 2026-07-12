@@ -20,6 +20,7 @@
 import { context, requestExpandedMode } from '@devvit/web/client';
 import type { LinkType, Puzzle } from '../shared/puzzle';
 import type { InitResponse } from '../shared/api';
+import { paintOutlineRing } from './textOutline';
 
 // ---------------------------------------------------------------------------------------
 // Palette (mirrors src/client/theme.ts — kept literal here so the inline bundle stays lean)
@@ -507,10 +508,13 @@ function clippedTitle(
   ctx.fillStyle = '#000';
   ctx.fillText(BRAND, W / 2, H / 2);
   ctx.globalCompositeOperation = 'source-over';
+  // Masked-stroke ring, not strokeText — phones fall back to a variable font whose
+  // overlapping glyph contours would paint border fragments inside the letters
+  // (see textOutline.ts). Slots behind the pattern on this transparent bake.
   if (keyline) {
-    ctx.lineWidth = px * 0.05;
-    ctx.strokeStyle = C.ink;
-    ctx.strokeText(BRAND, W / 2, H / 2);
+    paintOutlineRing(ctx, px * 0.05, C.ink, (c2, mode) =>
+      mode === 'stroke' ? c2.strokeText(BRAND, W / 2, H / 2) : c2.fillText(BRAND, W / 2, H / 2)
+    );
   }
   return c;
 }
@@ -564,30 +568,52 @@ function drawTitle(
     ctx.fillStyle = C.ink;
     ctx.fillText(BRAND, x, y);
   } else if (style === 'blocky3d') {
+    // Outline rings, not strokeText — see textOutline.ts (phone fallback fonts have
+    // overlapping glyph contours that stroke as marks inside the letters). On this opaque
+    // canvas the ring paints first ('over'), then the face fills on top of it.
     const step = size * 0.021;
     ctx.fillStyle = C.ink;
     for (let o = 6; o >= 1; o--) ctx.fillText(BRAND, x + o * step, y + o * step);
-    ctx.lineWidth = size * 0.035;
-    ctx.strokeStyle = C.ink;
-    ctx.strokeText(BRAND, x, y);
+    paintOutlineRing(
+      ctx,
+      size * 0.02,
+      C.ink,
+      (c, m) => (m === 'stroke' ? c.strokeText(BRAND, x, y) : c.fillText(BRAND, x, y)),
+      'over'
+    );
     ctx.fillStyle = C.yellow;
     ctx.fillText(BRAND, x, y);
   } else if (style === 'hollow') {
-    ctx.lineWidth = size * 0.06;
-    ctx.strokeStyle = C.ink;
-    ctx.strokeText(BRAND, x, y);
+    paintOutlineRing(
+      ctx,
+      size * 0.05,
+      C.ink,
+      (c, m) => (m === 'stroke' ? c.strokeText(BRAND, x, y) : c.fillText(BRAND, x, y)),
+      'over'
+    );
   } else if (style === 'rainbow') {
     const colors = [C.pink, C.cyan, C.yellow, C.green, C.purple, C.red, C.navy, C.pink];
-    let cx = x - textW / 2;
     ctx.textAlign = 'left';
+    // Fixed per-glyph advances, shared by the ring pass and the colour fills.
+    const xs: number[] = [];
+    let cx = x - textW / 2;
+    for (const ch of BRAND) {
+      xs.push(cx);
+      cx += ctx.measureText(ch).width;
+    }
+    paintOutlineRing(
+      ctx,
+      size * 0.025,
+      C.ink,
+      (c, m) =>
+        BRAND.split('').forEach((ch, i) =>
+          m === 'stroke' ? c.strokeText(ch, xs[i]!, y) : c.fillText(ch, xs[i]!, y)
+        ),
+      'over'
+    );
     BRAND.split('').forEach((ch, i) => {
-      const w = ctx.measureText(ch).width;
-      ctx.lineWidth = size * 0.04;
-      ctx.strokeStyle = C.ink;
-      ctx.strokeText(ch, cx, y);
       ctx.fillStyle = colors[i]!;
-      ctx.fillText(ch, cx, y);
-      cx += w;
+      ctx.fillText(ch, xs[i]!, y);
     });
   } else {
     // Baked patterned styles — painted on an offscreen canvas then stamped centred.

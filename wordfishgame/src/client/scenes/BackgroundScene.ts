@@ -198,6 +198,14 @@ export class BackgroundScene extends Phaser.Scene {
     g.generateTexture('grid-cell', cellSize, cellSize);
     g.destroy();
 
+    // Lineless variant for clean mode — same off-white so the page tone doesn't shift,
+    // just no scrolling grid to trigger motion sickness.
+    const p = this.make.graphics({}, false);
+    p.fillStyle(PALETTE.offWhite, 1);
+    p.fillRect(0, 0, cellSize, cellSize);
+    p.generateTexture('grid-cell-plain', cellSize, cellSize);
+    p.destroy();
+
     const o = this.GRID_OVERSCAN;
     this.grid = this.add
       .tileSprite(-o, -o, this.fieldWidth + o * 2, this.fieldHeight + o * 2, 'grid-cell')
@@ -772,8 +780,10 @@ export class BackgroundScene extends Phaser.Scene {
 
   /**
    * Clean mode: hide/show the drifting shapes + squiggles for players who find them
-   * distracting (the grid stays). Hidden decor also stops animating — no point moving what
-   * isn't drawn — and resumes from where it left off when shown again.
+   * distracting. The gridlines go too — a perpetually scrolling grid is exactly the kind
+   * of ambient motion that gives sensitive players motion sickness — leaving a flat
+   * off-white page. Hidden decor also stops animating — no point moving what isn't
+   * drawn — and resumes from where it left off when shown again.
    */
   isDecorHidden(): boolean {
     return this.decorHidden;
@@ -781,6 +791,7 @@ export class BackgroundScene extends Phaser.Scene {
 
   setDecorHidden(hidden: boolean) {
     this.decorHidden = hidden;
+    this.grid.setTexture(hidden ? 'grid-cell-plain' : 'grid-cell');
     for (const s of this.squiggles) s.obj.setVisible(!hidden);
     for (const shape of this.shapes) {
       shape.container.setVisible(!hidden);
@@ -794,11 +805,10 @@ export class BackgroundScene extends Phaser.Scene {
 
   override update(_time: number, delta: number) {
     const started = PERF ? performance.now() : 0;
-    const gridSpeed = 0.03;
-    this.grid.tilePositionX += gridSpeed * delta;
-    this.grid.tilePositionY += gridSpeed * delta;
-
     if (!this.decorHidden) {
+      const gridSpeed = 0.03;
+      this.grid.tilePositionX += gridSpeed * delta;
+      this.grid.tilePositionY += gridSpeed * delta;
       // Horizontal wrap sits well past the right edge (like the shapes) so a parallax-
       // offset camera never catches a squiggle popping back in. Vertical stays tight — the
       // camera only pans on X, so the bottom re-entry is always off-screen already.

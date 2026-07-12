@@ -9,6 +9,7 @@ import { createDecorToggle, drawDecorGlyph } from '../puzzle/decorToggle';
 import { SoundFx } from '../puzzle/SoundFx';
 import { TutorialCoach } from '../puzzle/TutorialCoach';
 import type { CoachStep } from '../puzzle/TutorialCoach';
+import { scatterHomes } from '../puzzle/scatter';
 import { PALETTE } from '../theme';
 import { slideCameraIn, transitionToPage, isTransitioning, SLIDE_DURATION } from './pageTransition';
 import type { PageEnterData } from './pageTransition';
@@ -47,6 +48,9 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
   // The same top-right controls the puzzle has — shown here so the tutorial can point them out.
   private buttons: IconButton[] = [];
   private cleanButton: IconButton | null = null;
+  // Top-LEFT home button — always available (sits above the coach dim), so you can bail to the
+  // menu at any point in the tutorial, greyed screen or not.
+  private backButton: IconButton | null = null;
   private help: HelpPopup | null = null;
   private sfx = new SoundFx();
   private focused: WordTile | null = null;
@@ -218,15 +222,55 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
     for (const b of [shuffle, help, clean]) b.setDepth(80);
     this.cleanButton = clean;
     this.buttons = [shuffle, help, clean];
+
+    // Home button, top-left. Raised above the coach dim (depth 120) so it's never greyed out —
+    // it stays a live, obvious way back to the menu at every step of the tutorial.
+    const back = new IconButton(this, 0, 0, {
+      onTap: () => this.goHome(),
+      draw: (g) => this.drawHomeGlyph(g),
+    });
+    back.setDepth(130);
+    this.backButton = back;
+
     this.positionControls();
   }
 
-  /** Right-aligned row in the top-right corner: shuffle in the corner, help then clean to its left. */
+  /** Right-aligned row in the top-right corner: shuffle in the corner, help then clean to its
+   *  left; the home button sits alone in the top-left. */
   private positionControls() {
     const W = this.scale.width;
     const r = this.buttons[0]?.radius ?? 20;
     const inset = LAYOUT_MARGIN + 4 + r;
     this.buttons.forEach((b, i) => b.setPosition(W - inset - i * (r * 2 + 10), inset));
+    this.backButton?.setPosition(inset, inset);
+  }
+
+  /** A simple house outline — the back-to-menu glyph (matches PuzzleScene's). */
+  private drawHomeGlyph(g: Phaser.GameObjects.Graphics) {
+    g.lineStyle(3, PALETTE.ink, 1);
+    g.beginPath();
+    g.moveTo(-9, 0); // roof left
+    g.lineTo(0, -9); // apex
+    g.lineTo(9, 0); // roof right
+    g.strokePath();
+    g.beginPath();
+    g.moveTo(-6, -1);
+    g.lineTo(-6, 9); // left wall
+    g.lineTo(6, 9); // floor
+    g.lineTo(6, -1); // right wall
+    g.strokePath();
+    g.strokeRect(-2, 3, 4, 6); // door
+  }
+
+  /** Leave the tutorial and return to the main menu — the top-left home button, callable at
+   *  any step. Same board→menu sweep the PLAY button uses. */
+  private goHome() {
+    if (this.transitioning || isTransitioning()) return;
+    this.transitioning = true;
+    this.finished = true;
+    this.sfx.tap();
+    this.coach?.setVisible(false); // drop the dim instantly so it can't smear on the way out
+    transitionToPage(this, 'MenuScene', {}, 'right', 0);
   }
 
   /** Two arrows crossing — the standard shuffle symbol (matches PuzzleScene's). */
@@ -244,22 +288,19 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
     head(9, 7, 2, 1.5);
   }
 
-  /** Re-arrange the example tiles (and bring any dragged off-screen back) — same idea as the
-   *  puzzle's shuffle, so the button visibly does its job when the player tries it. */
+  /** Fling the example tiles to fresh random spread-out positions (and bring any dragged
+   *  off-screen back) — the same behaviour as the puzzle's shuffle (see scatterHomes), so the
+   *  button visibly does its real job when the player tries it. */
   private shuffleTiles() {
     if (this.tileList.length === 0 || this.help) return;
     this.sfx.drop();
-    const spots = this.tileList.map((t) => ({ x: t.x, y: t.y }));
-    for (let i = spots.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [spots[i], spots[j]] = [spots[j]!, spots[i]!];
-    }
-    const W = this.scale.width;
-    this.tileList.forEach((t, i) => {
-      const jx = Phaser.Math.FloatBetween(-W * 0.04, W * 0.04);
-      const jy = Phaser.Math.FloatBetween(-18, 18);
-      t.setHome(this.clampX(t, spots[i]!.x + jx), this.clampY(t, spots[i]!.y + jy, this.playBottom));
+    const homes = scatterHomes(this.tileList, {
+      width: this.scale.width,
+      bottom: this.playBottom,
+      scale: this.tileScale,
+      margin: LAYOUT_MARGIN,
     });
+    this.tileList.forEach((t, i) => t.setHome(homes[i]!.x, homes[i]!.y));
   }
 
   /** Open the link-type reference (the same panel the puzzle's ? button opens). Raised above
@@ -353,7 +394,7 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
       case 'controls':
         return {
           // Introduce the real in-game controls, and nudge them to open the link key.
-          text: 'Up here are some useful buttons. BG hides the drifting background elements, ? lets you see every kind of link (there are 8 overall), and the shuffle button rearranges your tiles.',
+          text: 'Up here are some useful buttons. BG hides the drifting background elements, ? lets you see every kind of link (there are 8 overall), the shuffle button rearranges your tiles, and the button in the top-left corner takes you back to the main menu.',
           target: () => this.controlsRect(),
           progress,
           buttons: [skip, back, next],
@@ -379,7 +420,7 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
   }
 
   private doneText(): string {
-    if (this.skipped) return "That's the gist — use the links to work out the missing words. Good luck!";
+    if (this.skipped) return "That's the overall idea; use the links to work out the missing words. Good luck!";
     if (this.lastSolvedWith && this.lastSolvedWith !== ANSWER) {
       return `Sneaky! ${this.lastSolvedWith} fits too!\n\nPuzzles are usually meant to have a single answer, but we left this in as an Easter Egg. Seems like you've mastered it; good luck out there!`;
     }

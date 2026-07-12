@@ -2,11 +2,15 @@ import * as Phaser from 'phaser';
 import { PALETTE, UI_FONT } from '../theme';
 
 const PANEL_W = 340;
-const PANEL_H = 220;
+// Fits a single-line subtitle ("The word was APPLE"); grows downward when the subtitle
+// wraps to more lines (a hard "path5" chain can reveal three hidden words at once, which
+// used to spill the subtitle text past the card's edge — see below).
+const BASE_PANEL_H = 220;
 const RADIUS = 16;
 const BORDER = 6;
 const BTN_W = 190;
 const BTN_H = 46;
+const SUBTITLE_INSET = 28; // clear margin each side so wrapped text never touches the border
 
 export type WinPopupOptions = {
   /** The solved hidden word(s), shown in the subtitle. */
@@ -21,6 +25,9 @@ export type WinPopupOptions = {
  * Springs in with a Back ease; sits above everything (depth 100).
  */
 export class WinPopup extends Phaser.GameObjects.Container {
+  // Set once in the constructor from the (possibly wrapped) subtitle height, then read by
+  // every other element's layout — see BASE_PANEL_H above.
+  private panelH = BASE_PANEL_H;
   private btnLabel: Phaser.GameObjects.Text;
   private btnBg: Phaser.GameObjects.Graphics;
   private shareBusy = false;
@@ -33,20 +40,43 @@ export class WinPopup extends Phaser.GameObjects.Container {
     super(scene, x, y);
     this.once(Phaser.GameObjects.Events.DESTROY, () => (this.killed = true));
 
+    // Built and measured FIRST: a hard puzzle can reveal up to three hidden words at
+    // once, and however many lines that wraps to determines how tall the card needs to
+    // be. Every other element below is positioned off `this.panelH`, computed here.
+    const words = options.answers;
+    const subtitleText =
+      words.length > 1
+        ? `The words were ${words.slice(0, -1).join(', ')} & ${words[words.length - 1]}`
+        : `The word was ${words[0] ?? ''}`;
+    const subtitle = scene.add.text(0, 0, subtitleText, {
+      fontFamily: UI_FONT,
+      fontSize: '15px',
+      fontStyle: '800',
+      color: '#2b2d6e',
+      align: 'center',
+      wordWrap: { width: PANEL_W - SUBTITLE_INSET * 2, useAdvancedWrap: true },
+    });
+    subtitle.setOrigin(0.5, 0);
+    const lineCount = Math.max(1, subtitle.getWrappedText(subtitleText).length);
+    const lineHeight = subtitle.height / lineCount;
+    this.panelH = BASE_PANEL_H + lineHeight * (lineCount - 1);
+    const panelH = this.panelH;
+    subtitle.setY(-panelH / 2 + 88);
+
     // Offset shadow + panel.
     const panel = scene.add.graphics();
     panel.fillStyle(PALETTE.ink, 0.2);
-    panel.fillRoundedRect(-PANEL_W / 2 + 8, -PANEL_H / 2 + 9, PANEL_W, PANEL_H, RADIUS);
+    panel.fillRoundedRect(-PANEL_W / 2 + 8, -panelH / 2 + 9, PANEL_W, panelH, RADIUS);
     panel.fillStyle(0xffffff, 1);
-    panel.fillRoundedRect(-PANEL_W / 2, -PANEL_H / 2, PANEL_W, PANEL_H, RADIUS);
+    panel.fillRoundedRect(-PANEL_W / 2, -panelH / 2, PANEL_W, panelH, RADIUS);
     panel.lineStyle(BORDER, PALETTE.ink, 1);
-    panel.strokeRoundedRect(-PANEL_W / 2, -PANEL_H / 2, PANEL_W, PANEL_H, RADIUS);
+    panel.strokeRoundedRect(-PANEL_W / 2, -panelH / 2, PANEL_W, panelH, RADIUS);
     // A couple of Memphis accents on the card (top-right corner is reserved for the
     // close button, added below).
     panel.fillStyle(PALETTE.pink, 1);
-    panel.fillCircle(-PANEL_W / 2 + 26, -PANEL_H / 2 + 24, 6);
+    panel.fillCircle(-PANEL_W / 2 + 26, -panelH / 2 + 24, 6);
     panel.fillStyle(PALETTE.cyan, 1);
-    panel.fillCircle(PANEL_W / 2 - 24, PANEL_H / 2 - 22, 6);
+    panel.fillCircle(PANEL_W / 2 - 24, panelH / 2 - 22, 6);
     this.add(panel);
 
     // The whole card is a drag handle, so the win screen can be nudged aside (matching the
@@ -54,9 +84,9 @@ export class WinPopup extends Phaser.GameObjects.Container {
     // on top and still take their own taps; only empty card area starts a drag. Dragging is
     // tracked from a captured grab offset so it's immune to the card's spring-in scale.
     const dragHandle = scene.add.container(0, 0);
-    dragHandle.setSize(PANEL_W, PANEL_H);
+    dragHandle.setSize(PANEL_W, panelH);
     dragHandle.setInteractive({
-      hitArea: new Phaser.Geom.Rectangle(-PANEL_W / 2, -PANEL_H / 2, PANEL_W, PANEL_H),
+      hitArea: new Phaser.Geom.Rectangle(-PANEL_W / 2, -panelH / 2, PANEL_W, panelH),
       hitAreaCallback: Phaser.Geom.Rectangle.Contains,
       draggable: true,
       useHandCursor: true,
@@ -68,11 +98,12 @@ export class WinPopup extends Phaser.GameObjects.Container {
       grabY = this.y - p.worldY;
     });
     dragHandle.on('drag', (p: Phaser.Input.Pointer) => {
-      this.setPosition(p.worldX + grabX, p.worldY + grabY);
+      const { x, y } = this.clampToScreen(p.worldX + grabX, p.worldY + grabY);
+      this.setPosition(x, y);
     });
     this.add(dragHandle);
 
-    const title = scene.add.text(0, -PANEL_H / 2 + 52, 'YOU WIN!', {
+    const title = scene.add.text(0, -panelH / 2 + 52, 'YOU WIN!', {
       fontFamily: UI_FONT,
       fontSize: '36px',
       fontStyle: '900',
@@ -81,22 +112,10 @@ export class WinPopup extends Phaser.GameObjects.Container {
     title.setOrigin(0.5);
     this.add(title);
 
-    const words = options.answers;
-    const subtitleText =
-      words.length > 1
-        ? `The words were ${words.slice(0, -1).join(', ')} & ${words[words.length - 1]}`
-        : `The word was ${words[0] ?? ''}`;
-    const subtitle = scene.add.text(0, -PANEL_H / 2 + 96, subtitleText, {
-      fontFamily: UI_FONT,
-      fontSize: '15px',
-      fontStyle: '800',
-      color: '#2b2d6e',
-    });
-    subtitle.setOrigin(0.5);
     this.add(subtitle);
 
     // Share button — yellow pill, ink border, its own offset shadow.
-    const btnY = PANEL_H / 2 - 50;
+    const btnY = panelH / 2 - 50;
     this.btnBg = scene.add.graphics();
     this.drawButton(PALETTE.yellow);
     this.add(this.btnBg);
@@ -144,7 +163,7 @@ export class WinPopup extends Phaser.GameObjects.Container {
 
     // Close button — white disc with an ink "×" in the top-right corner.
     const cx = PANEL_W / 2 - 22;
-    const cy = -PANEL_H / 2 + 22;
+    const cy = -panelH / 2 + 22;
     const close = scene.add.graphics();
     close.fillStyle(0xffffff, 1);
     close.fillCircle(cx, cy, 14);
@@ -198,8 +217,22 @@ export class WinPopup extends Phaser.GameObjects.Container {
     });
   }
 
+  /** Keep the card's panel fully on-screen while it's dragged, so it can be nudged aside but
+   *  never off the edge (matching the word tiles). If the canvas is narrower/shorter than the
+   *  panel, it pins to centre on that axis rather than jamming against one edge. */
+  private clampToScreen(x: number, y: number): { x: number; y: number } {
+    const W = this.scene.scale.width;
+    const H = this.scene.scale.height;
+    const halfW = PANEL_W / 2;
+    const halfH = this.panelH / 2;
+    return {
+      x: halfW > W - halfW ? W / 2 : Phaser.Math.Clamp(x, halfW, W - halfW),
+      y: halfH > H - halfH ? H / 2 : Phaser.Math.Clamp(y, halfH, H - halfH),
+    };
+  }
+
   private drawButton(fill: number) {
-    const btnY = PANEL_H / 2 - 50;
+    const btnY = this.panelH / 2 - 50;
     const g = this.btnBg;
     g.clear();
     g.fillStyle(PALETTE.ink, 0.25);

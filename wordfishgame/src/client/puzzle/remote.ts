@@ -37,6 +37,25 @@ export function getBootPuzzle(): CustomPuzzle | null {
   return bootPuzzle;
 }
 
+/**
+ * Read a one-off puzzle straight out of the URL: `?previewPuzzle=<encodeURIComponent(JSON)>`.
+ * Used by the puzzlegen review tool (see scripts/puzzlegen/review.html) so a curator can jump
+ * from a puzzle's chain-of-text preview straight into the real rendered board — no server, no
+ * menu, no daily-puzzle plumbing. Malformed/missing input just returns null (falls through to
+ * the normal boot flow) rather than throwing.
+ */
+export function getPreviewPuzzleFromUrl(): Puzzle | null {
+  try {
+    const raw = new URLSearchParams(window.location.search).get('previewPuzzle');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<Puzzle>;
+    if (!parsed || !Array.isArray(parsed.words) || !Array.isArray(parsed.links)) return null;
+    return parsed as Puzzle;
+  } catch {
+    return null;
+  }
+}
+
 /** A demo custom puzzle for local testing (no server): open with `?demoCustom=1`. */
 const DEMO_BOOT_PUZZLE: CustomPuzzle = {
   title: 'Meteor Shower',

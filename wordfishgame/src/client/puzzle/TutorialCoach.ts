@@ -216,8 +216,16 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
       draggable: true,
       useHandCursor: true,
     });
+    // Keep the bubble fully on-screen while dragged — it can be nudged aside but never off
+    // the edge (matching the word tiles and the win card).
     c.on('drag', (_p: Phaser.Input.Pointer, dragX: number, dragY: number) => {
-      c.setPosition(dragX, dragY);
+      const W = scene.scale.width;
+      const H = scene.scale.height;
+      const halfW = cardW / 2;
+      const halfH = cardH / 2;
+      const x = halfW > W - halfW ? W / 2 : Phaser.Math.Clamp(dragX, halfW, W - halfW);
+      const y = halfH > H - halfH ? H / 2 : Phaser.Math.Clamp(dragY, halfH, H - halfH);
+      c.setPosition(x, y);
     });
 
     return c;

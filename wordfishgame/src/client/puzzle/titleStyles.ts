@@ -1,4 +1,7 @@
 import Phaser from 'phaser';
+import { effectiveDpr } from '../hidpi';
+import { paintOutlineRing } from '../textOutline';
+import type { TextPainter } from '../textOutline';
 
 /**
  * The home-screen "WordFish" title, in one of a rotating set of Memphis treatments. The
@@ -6,11 +9,15 @@ import Phaser from 'phaser';
  * little different every visit.
  *
  * Two build strategies are used, picked per style by how it's drawn:
- *  - TEXT styles stack a few Phaser Text objects (fills, strokes, offsets, per-letter
- *    colour / rotation) inside a container. Cheap, crisp, resolution-independent.
+ *  - TEXT styles stack a few Phaser Text objects (fills and offsets only) inside a
+ *    container. Cheap, crisp, resolution-independent — but reserved for styles with NO
+ *    outline: text strokes are off-limits, because on phones the title font falls back to
+ *    a variable font whose overlapping glyph contours make strokeText paint stray border
+ *    fragments inside the letters (see textOutline.ts).
  *  - BAKED styles need a pattern the text engine can't fill (dots, stripes, gradients, a
- *    clipped waterline), so they're painted to a 2× canvas texture clipped to the letter
- *    shapes — the same trick the drifting background shapes use — and shown at 0.5 scale.
+ *    clipped waterline) or an outline ring (built via textOutline's masked-stroke trick),
+ *    so they're painted to a supersampled canvas texture clipped to the letter shapes —
+ *    the same trick the drifting background shapes use — and shown scaled back down.
  *
  * Every builder returns a Container centred on (x, y) with its pieces around the local
  * origin, so the caller can place, tween and rotate the whole title as one object.
@@ -19,9 +26,21 @@ import Phaser from 'phaser';
 const WORD = 'WordFish';
 const TITLE_FONT = '"Arial Black", "Arial Bold", Arial, sans-serif';
 const TAU = Math.PI * 2;
-/** Bake resolution multiplier — textures are painted at 2× and displayed at 0.5 for crisp
- *  edges on high-DPI screens (mirrors the background-shape textures). */
-const RES = 2;
+/**
+ * Bake-resolution multiplier: the texture is painted at RES× the cap-height and shown at
+ * `1 / RES` scale, so it always occupies the same CSS size — RES only trades texture memory
+ * for edge crispness.
+ *
+ * It has to be at least 2× the display density (the capped device pixel ratio), NOT a flat 2.
+ * At a flat 2, a phone (dpr 2, its camera zoomed ×2) maps the texture 1:1 onto device pixels;
+ * any sub-pixel offset then makes LINEAR filtering smear the thin ink keylines and letter
+ * edges across two rows — the "broken borders" bug. Baking at `2 × dpr` keeps the on-screen
+ * image minified ≥2:1 on every platform (the same supersampling desktop already gets), which
+ * averages that offset away. Desktop (dpr 1) is unchanged at 2.
+ */
+function bakeRes(): number {
+  return 2 * effectiveDpr();
+}
 
 const C = {
   ink: '#1c1c1c',
@@ -76,25 +95,14 @@ export function buildTitle(
     case 'longshadow':
       buildLongShadow(scene, c, size);
       break;
-    case 'blocky3d':
-      buildBlocky(scene, c, size);
-      break;
-    case 'hollow':
-      buildHollow(scene, c, size);
-      break;
     case 'highlighter':
       buildHighlighter(scene, c, size);
       break;
     case 'cutout':
       buildCutout(scene, c, size);
       break;
-    case 'rainbow':
-      buildRainbow(scene, c, size);
-      break;
-    case 'wonky':
-      buildWonky(scene, c, size);
-      break;
     default:
+      // Everything with an outline ring or a pattern fill is baked (see file header).
       buildBaked(scene, c, size, style);
       break;
   }
@@ -121,18 +129,6 @@ function word(scene: Phaser.Scene, size: number, color: string): Phaser.GameObje
     .setOrigin(0.5);
 }
 
-/** A single glyph in the title font (for per-letter styles). */
-function glyph(scene: Phaser.Scene, size: number, ch: string, color: string): Phaser.GameObjects.Text {
-  return scene.add
-    .text(0, 0, ch, {
-      fontFamily: TITLE_FONT,
-      fontSize: `${size}px`,
-      fontStyle: '900',
-      color,
-    })
-    .setOrigin(0.5);
-}
-
 /** Ink letters raked into a flat cyan shadow down-right. */
 function buildLongShadow(scene: Phaser.Scene, c: Phaser.GameObjects.Container, size: number) {
   const step = size * 0.02;
@@ -140,20 +136,6 @@ function buildLongShadow(scene: Phaser.Scene, c: Phaser.GameObjects.Container, s
     c.add(word(scene, size, C.cyan).setPosition(o * step, o * step));
   }
   c.add(word(scene, size, C.ink));
-}
-
-/** Yellow face with an ink keyline, extruded straight down in ink. */
-function buildBlocky(scene: Phaser.Scene, c: Phaser.GameObjects.Container, size: number) {
-  const step = size * 0.021;
-  for (let o = 6; o >= 1; o--) {
-    c.add(word(scene, size, C.ink).setPosition(o * step, o * step));
-  }
-  c.add(word(scene, size, C.yellow).setStroke(C.ink, size * 0.035));
-}
-
-/** Open letters: board shows through, ink outline only. */
-function buildHollow(scene: Phaser.Scene, c: Phaser.GameObjects.Container, size: number) {
-  c.add(word(scene, size, 'rgba(0,0,0,0)').setStroke(C.ink, size * 0.06));
 }
 
 /** Ink letters over a hand-swiped yellow marker band, whole thing tilted a touch. */
@@ -188,46 +170,8 @@ function buildCutout(scene: Phaser.Scene, c: Phaser.GameObjects.Container, size:
   c.setData('halfHeight', cardH / 2 + size * 0.08);
 }
 
-/** Lay a row of per-letter glyphs out centred, advancing by each glyph's width. Optional
- *  per-letter rotation / vertical nudge for the wonky style. */
-function layoutGlyphs(
-  glyphs: Phaser.GameObjects.Text[],
-  rotate?: (i: number) => { rot: number; dy: number }
-) {
-  const total = glyphs.reduce((s, g) => s + g.width, 0);
-  let cx = -total / 2;
-  glyphs.forEach((g, i) => {
-    g.setX(cx + g.width / 2);
-    if (rotate) {
-      const { rot, dy } = rotate(i);
-      g.setRotation(rot);
-      g.setY(dy);
-    }
-    cx += g.width;
-  });
-}
-
-/** Each letter its own palette colour, each with an ink keyline. */
-function buildRainbow(scene: Phaser.Scene, c: Phaser.GameObjects.Container, size: number) {
-  const colors = [C.pink, C.cyan, C.yellow, C.green, C.purple, C.red, C.navy, C.pink];
-  const glyphs = WORD.split('').map((ch, i) => glyph(scene, size, ch, colors[i]!).setStroke(C.ink, size * 0.04));
-  layoutGlyphs(glyphs);
-  c.add(glyphs);
-}
-
-/** Sticker letters knocked a few degrees off true, Memphis-style. */
-function buildWonky(scene: Phaser.Scene, c: Phaser.GameObjects.Container, size: number) {
-  const glyphs = WORD.split('').map((ch) => glyph(scene, size, ch, C.ink).setStroke(C.white, size * 0.08));
-  layoutGlyphs(glyphs, (i) =>
-    i % 2 === 0
-      ? { rot: Phaser.Math.DegToRad(-7), dy: size * 0.03 }
-      : { rot: Phaser.Math.DegToRad(6), dy: -size * 0.03 }
-  );
-  c.add(glyphs);
-}
-
 // ---------------------------------------------------------------------------
-// BAKED styles (pattern / gradient / waterline)
+// BAKED styles (patterns, gradients, waterline, and every outlined style)
 // ---------------------------------------------------------------------------
 
 function buildBaked(
@@ -238,7 +182,8 @@ function buildBaked(
 ) {
   const key = `title-${style}-${size}`;
   bakeTitleTexture(scene, key, size, style);
-  c.add(scene.add.image(0, 0, key).setOrigin(0.5).setScale(1 / RES));
+  // Shown at 1 / RES so the RES× texture occupies the plain cap-height on screen.
+  c.add(scene.add.image(0, 0, key).setOrigin(0.5).setScale(1 / bakeRes()));
 }
 
 /** Paint the title into a canvas texture, at 2× resolution. `draw` gets the context with
@@ -247,7 +192,7 @@ function buildBaked(
 function bakeTitleTexture(scene: Phaser.Scene, key: string, size: number, style: TitleStyle) {
   if (scene.textures.exists(key)) return;
 
-  const px = size * RES;
+  const px = size * bakeRes();
   const font = `900 ${px}px ${TITLE_FONT}`;
   const measure = document.createElement('canvas').getContext('2d')!;
   measure.font = font;
@@ -267,8 +212,47 @@ function bakeTitleTexture(scene: Phaser.Scene, key: string, size: number, style:
   tex.refresh();
 }
 
+/** A painter that strokes/fills the whole word centred on the canvas — the geometry most
+ *  outline rings share. */
+const wordPainter = (W: number, H: number): TextPainter => (c, mode) => {
+  if (mode === 'stroke') c.strokeText(WORD, W / 2, H / 2);
+  else c.fillText(WORD, W / 2, H / 2);
+};
+
+/** One per-letter slot in a centred row: each glyph advances by its own width (matching the
+ *  old per-glyph Text layout), with optional rotation / vertical nudge for wonky. */
+type GlyphSpot = { ch: string; x: number; y: number; rot: number };
+
+function glyphSpots(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+  wobble?: (i: number) => { rot: number; dy: number }
+): GlyphSpot[] {
+  const chars = WORD.split('');
+  const widths = chars.map((ch) => ctx.measureText(ch).width);
+  const total = widths.reduce((s, w) => s + w, 0);
+  let cx = W / 2 - total / 2;
+  return chars.map((ch, i) => {
+    const wb = wobble?.(i) ?? { rot: 0, dy: 0 };
+    const spot = { ch, x: cx + widths[i]! / 2, y: H / 2 + wb.dy, rot: wb.rot };
+    cx += widths[i]!;
+    return spot;
+  });
+}
+
+function paintGlyph(c: CanvasRenderingContext2D, sp: GlyphSpot, mode: 'stroke' | 'fill') {
+  c.save();
+  c.translate(sp.x, sp.y);
+  c.rotate(sp.rot);
+  if (mode === 'stroke') c.strokeText(sp.ch, 0, 0);
+  else c.fillText(sp.ch, 0, 0);
+  c.restore();
+}
+
 /** Fill the whole canvas via `fillBg`, keep only the part inside the letters, then (option-
- *  ally) trace an ink keyline around them. The shared skeleton for pattern / gradient fills. */
+ *  ally) slot an ink keyline ring behind them. The shared skeleton for pattern / gradient
+ *  fills. The keyline is a masked-stroke ring, NOT a strokeText — see textOutline.ts. */
 function clippedFill(
   ctx: CanvasRenderingContext2D,
   W: number,
@@ -281,11 +265,7 @@ function clippedFill(
   ctx.fillStyle = '#000';
   ctx.fillText(WORD, W / 2, H / 2);
   ctx.globalCompositeOperation = 'source-over';
-  if (keyline) {
-    ctx.lineWidth = keyline.w;
-    ctx.strokeStyle = keyline.color;
-    ctx.strokeText(WORD, W / 2, H / 2);
-  }
+  if (keyline) paintOutlineRing(ctx, keyline.w, keyline.color, wordPainter(W, H));
 }
 
 /** Scatter dots across the whole canvas at a given cell size, radius fraction and offset. */
@@ -431,12 +411,53 @@ const BAKE_DRAW: Record<
     ctx.restore();
   },
 
-  // These four never reach BAKE_DRAW (handled as TEXT styles), but the Record needs them.
+  // Yellow face with an ink keyline ring, extruded straight down-right in ink.
+  blocky3d: (ctx, W, H, px) => {
+    const step = px * 0.021;
+    ctx.fillStyle = C.ink;
+    for (let o = 6; o >= 1; o--) ctx.fillText(WORD, W / 2 + o * step, H / 2 + o * step);
+    ctx.fillStyle = C.yellow;
+    ctx.fillText(WORD, W / 2, H / 2);
+    // Ring slots behind the face; where it overlaps the extrusion both are ink — invisible.
+    paintOutlineRing(ctx, px * 0.02, C.ink, wordPainter(W, H));
+  },
+
+  // Open letters: board shows through, ink outline ring only.
+  hollow: (ctx, W, H, px) => {
+    paintOutlineRing(ctx, px * 0.05, C.ink, wordPainter(W, H));
+  },
+
+  // Each letter its own palette colour, each with an ink keyline ring.
+  rainbow: (ctx, W, H, px) => {
+    const colors = [C.pink, C.cyan, C.yellow, C.green, C.purple, C.red, C.navy, C.pink];
+    const spots = glyphSpots(ctx, W, H);
+    spots.forEach((sp, i) => {
+      ctx.fillStyle = colors[i % colors.length]!;
+      paintGlyph(ctx, sp, 'fill');
+    });
+    paintOutlineRing(ctx, px * 0.025, C.ink, (c, mode) =>
+      spots.forEach((sp) => paintGlyph(c, sp, mode))
+    );
+  },
+
+  // Sticker letters knocked a few degrees off true, Memphis-style. Each glyph paints its
+  // own white ring then its ink fill IN ORDER, so a later sticker's white edge laps over
+  // its neighbour — the overlapped-stickers look the Text version had.
+  wonky: (ctx, W, H, px) => {
+    const spots = glyphSpots(ctx, W, H, (i) =>
+      i % 2 === 0
+        ? { rot: Phaser.Math.DegToRad(-7), dy: px * 0.03 }
+        : { rot: Phaser.Math.DegToRad(6), dy: -px * 0.03 }
+    );
+    for (const sp of spots) {
+      paintOutlineRing(ctx, px * 0.04, C.white, (c, mode) => paintGlyph(c, sp, mode), 'over');
+      ctx.fillStyle = C.ink;
+      paintGlyph(ctx, sp, 'fill');
+    }
+  },
+
+  // These three never reach BAKE_DRAW (handled as TEXT styles), but the Record needs them.
   longshadow: () => {},
-  blocky3d: () => {},
-  hollow: () => {},
   highlighter: () => {},
   cutout: () => {},
-  rainbow: () => {},
-  wonky: () => {},
 };
