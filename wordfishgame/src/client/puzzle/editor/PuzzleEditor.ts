@@ -21,9 +21,10 @@ import { navigateToPost, publishPuzzle } from '../remote';
 import { findBlockedTerm } from '../../../shared/moderation';
 
 export type PuzzleEditorCallbacks = {
-  /** Preview the built puzzle now. The overlay is HIDDEN (not destroyed) so the creator can
-   *  return to their form untouched via showPuzzleEditor(). */
-  onPreview: (puzzle: Puzzle, title: string) => void;
+  /** Preview the built puzzle now. Returns whether the scenes actually swapped — only then
+   *  does the overlay HIDE itself (not destroy, so the creator can return to their form
+   *  untouched via showPuzzleEditor()). A refused swap keeps the overlay up. */
+  onPreview: (puzzle: Puzzle, title: string) => boolean;
   /** The editor was dismissed with no puzzle previewed. */
   onClose: () => void;
 };
@@ -42,9 +43,14 @@ let liveEditor: PuzzleEditor | null = null;
 type EditorDraft = { words: WordDraft[]; links: LinkDraft[]; title: string; idSeq: number };
 let savedDraft: EditorDraft | null = null;
 
-/** Open the editor overlay. Only one exists at a time. */
+/** Open the editor overlay. Only one exists at a time — if a live editor already exists
+ *  (possibly hidden mid-preview), it is re-shown with its form intact rather than silently
+ *  doing nothing, so a stranded overlay is always recoverable. */
 export function openPuzzleEditor(cb: PuzzleEditorCallbacks): void {
-  if (liveEditor) return;
+  if (liveEditor) {
+    liveEditor.show();
+    return;
+  }
   liveEditor = new PuzzleEditor(cb);
 }
 
@@ -349,8 +355,9 @@ class PuzzleEditor {
     // Order matters: the callback JUMPS the scenes underneath first (board snaps into
     // place behind this still-covering overlay), THEN the overlay fades out over it —
     // so the reveal is a clean crossfade to the board, never a glimpse of the menu.
-    this.cb.onPreview(built.puzzle, title);
-    this.fadeOut();
+    // If the jump was refused (a transition already mid-flight), stay up: fading out
+    // over whatever page is beneath would strand the player outside their form.
+    if (this.cb.onPreview(built.puzzle, title)) this.fadeOut();
   }
 
   // Pending display:none from a fadeOut — cancelled if show() lands mid-fade.

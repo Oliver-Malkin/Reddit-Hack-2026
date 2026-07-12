@@ -15,6 +15,29 @@ const PRESS_DY = 3;
 // Left/top bleed baked into the texture so the panel's 4px border and key shadows aren't
 // cropped; the panel is drawn at (0,0) in panel space and this pad sits outside it.
 const TEX_PAD = 6;
+
+/**
+ * Extra clearance above the canvas bottom for webviews that extend behind browser chrome.
+ * Reddit's mobile-web expanded webview is sized with the LARGE viewport (100vh of the host
+ * page), so its bottom ~60px sits behind the browser's retractable URL bar — and that clip
+ * is invisible from inside the iframe (100dvh here just measures the iframe itself). Pinning
+ * the keys flush to the canvas bottom put the whole Z row under the bar. Heuristic: embedded
+ * in an iframe AND a touch device → lift everything bottom-anchored clear. Desktop reddit
+ * (mouse), the native app-style direct webview and the local vite preview all get 0.
+ */
+function bottomSafeInset(): number {
+  let embedded: boolean;
+  try {
+    embedded = window.self !== window.top;
+  } catch {
+    embedded = true; // cross-origin parent blocked the check — definitely an iframe
+  }
+  const touch =
+    typeof window.matchMedia === 'function'
+      ? window.matchMedia('(pointer: coarse)').matches
+      : 'ontouchstart' in window;
+  return embedded && touch ? 64 : 0;
+}
 // Supersample the baked panel so it stays crisp on high-DPI (retina / phone) screens.
 const TEX_RES = 2;
 
@@ -84,7 +107,7 @@ export class OnScreenKeyboard extends Phaser.GameObjects.Container {
 
   /** Vertical space the open keyboard claims at the bottom of the canvas. */
   reservedHeight(): number {
-    return this.minimized ? 0 : this.panelH + BOTTOM_MARGIN * 2;
+    return this.minimized ? 0 : this.panelH + BOTTOM_MARGIN * 2 + bottomSafeInset();
   }
 
   /** Rebuild the keys for the current canvas size and pin to the bottom. Call on resize. */
@@ -153,7 +176,7 @@ export class OnScreenKeyboard extends Phaser.GameObjects.Container {
     this.buildMinimizeButton();
 
     this.setPosition((W - this.panelW) / 2, this.minimized ? H + 24 : this.openY());
-    this.restoreTab.setPosition(W - 46, H - 32);
+    this.restoreTab.setPosition(W - 46, H - 32 - bottomSafeInset());
     this.restoreTab.setVisible(this.minimized);
   }
 
@@ -203,7 +226,7 @@ export class OnScreenKeyboard extends Phaser.GameObjects.Container {
   }
 
   private openY(): number {
-    return this.scene.scale.height - this.panelH - BOTTOM_MARGIN;
+    return this.scene.scale.height - this.panelH - BOTTOM_MARGIN - bottomSafeInset();
   }
 
   /** Map a pointer to the key under it (panel-local coords) and fire it. */

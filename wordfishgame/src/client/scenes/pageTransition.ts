@@ -75,14 +75,17 @@ export function isTransitioning(): boolean {
  * covers the canvas: the destination must simply BE there when the overlay lifts, because
  * any sliding menu glimpsed beneath a fading overlay reads as a glitch. The incoming page
  * gets no `enterFrom`, which every page treats as "snap into place".
+ *
+ * Returns whether the jump ran — false while a slide transition is mid-flight, so callers
+ * (the editor's preview) know not to lift their overlay off an unchanged page.
  */
 export function jumpToPage(
   from: Phaser.Scene,
   toKey: string,
   data: Record<string, unknown>,
   parallax: number
-) {
-  if (busy) return;
+): boolean {
+  if (busy) return false;
   const mgr = from.scene;
   mgr.bringToTop(toKey);
   if (mgr.isSleeping(toKey)) mgr.wake(toKey, data);
@@ -92,6 +95,7 @@ export function jumpToPage(
   bg.panParallaxTo(parallax, 0); // snap — nothing should visibly move during a jump
 
   mgr.sleep();
+  return true;
 }
 
 /**
