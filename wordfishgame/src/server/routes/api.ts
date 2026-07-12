@@ -4,7 +4,11 @@ import type {
   DecrementResponse,
   IncrementResponse,
   InitResponse,
+  PublishPuzzleResponse,
 } from '../../shared/api';
+import { createPuzzlePost } from '../core/post';
+import { cleanTitle, loadPuzzle, savePuzzle, validatePuzzle } from '../core/puzzleStore';
+import { findBlockedTerm } from '../../shared/moderation';
 
 type ErrorResponse = {
   status: 'error';
@@ -28,9 +32,10 @@ api.get('/init', async (c) => {
   }
 
   try {
-    const [count, username] = await Promise.all([
+    const [count, username, stored] = await Promise.all([
       redis.get('count'),
       reddit.getCurrentUsername(),
+      loadPuzzle(postId),
     ]);
 
     return c.json<InitResponse>({
@@ -38,6 +43,15 @@ api.get('/init', async (c) => {
       postId: postId,
       count: count ? parseInt(count) : 0,
       username: username ?? 'anonymous',
+      // Only present for user-created puzzle posts; the daily post has nothing stored.
+      ...(stored
+        ? {
+            puzzle: stored.puzzle,
+            puzzleTitle: stored.title,
+            puzzleAuthor: stored.author,
+            postUrl: `https://reddit.com/r/${context.subredditName}/comments/${postId}`,
+          }
+        : {}),
     });
   } catch (error) {
     console.error(`API Init Error for post ${postId}:`, error);
@@ -90,4 +104,60 @@ api.post('/decrement', async (c) => {
     postId,
     type: 'decrement',
   });
+});
+
+/**
+ * Publish a user-created puzzle as its own Reddit post. Validates the payload, creates the
+ * post, then stores the puzzle JSON in Redis keyed by the new post id — so opening that post
+ * makes /api/init serve this puzzle. Returns the post URL for the client to navigate to.
+ */
+api.post('/puzzles/publish', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json<ErrorResponse>({ status: 'error', message: 'Invalid request body.' }, 400);
+  }
+
+  const { title: rawTitle, puzzle: rawPuzzle } = (body ?? {}) as {
+    title?: unknown;
+    puzzle?: unknown;
+  };
+  const result = validatePuzzle(rawPuzzle);
+  if (!result.ok) {
+    return c.json<ErrorResponse>({ status: 'error', message: result.message }, 400);
+  }
+  const title = cleanTitle(rawTitle);
+
+  // Hard gate on hate slurs (server-side, so it can't be bypassed by the client). The term
+  // itself is not echoed back.
+  const blocked = findBlockedTerm(title, ...result.puzzle.words.map((w) => w.text));
+  if (blocked) {
+    return c.json<ErrorResponse>(
+      {
+        status: 'error',
+        message: 'That puzzle contains a term we don’t allow. Please revise it and try again.',
+      },
+      400
+    );
+  }
+
+  try {
+    const author = (await reddit.getCurrentUsername()) ?? 'someone';
+    const post = await createPuzzlePost(title);
+    await savePuzzle(post.id, result.puzzle, title, author);
+
+    return c.json<PublishPuzzleResponse>({
+      type: 'publish',
+      status: 'ok',
+      postId: post.id,
+      url: `https://reddit.com/r/${context.subredditName}/comments/${post.id}`,
+    });
+  } catch (error) {
+    console.error('Error publishing puzzle:', error);
+    return c.json<ErrorResponse>(
+      { status: 'error', message: 'Could not publish the puzzle. Try again.' },
+      500
+    );
+  }
 });
