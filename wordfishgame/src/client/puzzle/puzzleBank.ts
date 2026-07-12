@@ -3532,8 +3532,8 @@ export const hardPuzzles: Puzzle[] = [
       },
       {
         "type": "hypernym",
-        "from": "w2",
-        "to": "w4"
+        "from": "w4",
+        "to": "w2"
       }
     ]
   },

@@ -393,7 +393,7 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     const portrait = W < H * 0.9;
     if (MODE === 'puzzle' && !portrait && n > 2) {
       const gap = 40;
-      const sameRowCenters = (W * 0.64 * 2) / (n - 1); // matches the fx step in computeSlots
+      const sameRowCenters = (W * 0.76 * 2) / (n - 1); // matches the fx step in computeSlots
       scale = Math.min(scale, Phaser.Math.Clamp((sameRowCenters - gap) / widest, 0.4, 1));
     }
     this.tileScale = scale;
@@ -433,14 +433,19 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     return this.tileList.map((tile, i) => {
       if (portrait) {
         // Stack down the canvas, nudged alternately so chains still read as diagonals.
+        // Wider x alternation than the landscape zigzag needs, since here it's the only
+        // thing keeping consecutive (already close, same-column-ish) tiles' chains legible.
         const bandTop = Math.max(64, availH * 0.16);
         const bandBottom = availH - Math.max(56, availH * 0.12);
         const step = n > 1 ? (bandBottom - bandTop) / (n - 1) : 0;
-        return { x: this.clampX(tile, W * (i % 2 === 0 ? 0.38 : 0.62)), y: bandTop + step * i };
+        return { x: this.clampX(tile, W * (i % 2 === 0 ? 0.32 : 0.68)), y: bandTop + step * i };
       }
-      // The mock's gentle zigzag across the middle band.
-      const fx = n === 1 ? 0.5 : 0.18 + (0.64 * i) / (n - 1);
-      return { x: this.clampX(tile, W * fx), y: availH * (0.5 + (i % 2 === 0 ? -0.16 : 0.13)) };
+      // The mock's gentle zigzag across the middle band. Wide enough on both axes that a
+      // short puzzle (few tiles, so a short chain) still gets a chain long enough to read
+      // clearly — a fixed narrow band left visible slack unused on small puzzles while
+      // starving the chain's arc length (see Chain.ts's fade-when-short behaviour).
+      const fx = n === 1 ? 0.5 : 0.12 + (0.76 * i) / (n - 1);
+      return { x: this.clampX(tile, W * fx), y: availH * (0.5 + (i % 2 === 0 ? -0.22 : 0.19)) };
     });
   }
 

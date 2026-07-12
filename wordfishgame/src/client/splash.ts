@@ -1632,9 +1632,27 @@ playBtn.addEventListener('click', (e) => {
 
 let resolved: CustomData | null = null;
 let known = false;
+let painted = false;
 
-render(null, false);
+// Hide the DOM button/caption immediately so there's no unstyled flash of a stray "PLAY"
+// at the top-left before the first paint runs (render() normally does this, but the first
+// paint is now delayed — see below).
+playBtn.style.visibility = 'hidden';
+caption.style.visibility = 'hidden';
+
+// Same-origin /api/init is usually fast, so give it a brief head start before falling back
+// to the bare-title placeholder: on a typical load this paints the real (daily or custom)
+// splash directly, with no intermediate flash. Only a genuinely slow fetch still shows the
+// placeholder first (previous behaviour), which then gets replaced once data arrives.
+const fallbackTimer = window.setTimeout(() => {
+  if (painted) return;
+  painted = true;
+  render(null, false);
+}, 220);
+
 void resolveCustom().then((custom) => {
+  window.clearTimeout(fallbackTimer);
+  painted = true;
   resolved = custom;
   known = true;
   render(resolved, known);

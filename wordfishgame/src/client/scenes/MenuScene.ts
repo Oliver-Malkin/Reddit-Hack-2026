@@ -66,16 +66,16 @@ export class MenuScene extends Phaser.Scene {
     // instead, since those swaps happen behind the editor overlay and mustn't move.
     this.events.on(Phaser.Scenes.Events.WAKE, (_sys: unknown, data: Partial<PageEnterData>) => {
       this.transitioning = false;
+      // Coming back from a preview: bring the (still-alive) editor overlay back on top, its
+      // form exactly as it was left — the menu underneath stays inert (render() disables the
+      // buttons while editorOpen). Any other wake ends the editor journey, so the flag is
+      // cleared; a stale true would wedge every menu button shut for good.
+      this.editorOpen =
+        Boolean((data as { reopenEditor?: boolean })?.reopenEditor) && showPuzzleEditor();
       this.titleStyle = pickTitleStyle(); // a fresh title each time you come back
       this.render();
       if (data?.enterFrom) slideCameraIn(this, data.enterFrom);
       else this.cameras.main.setScroll(0, 0);
-      // Coming back from a preview: bring the (still-alive) editor overlay back on top,
-      // its form exactly as it was left.
-      if ((data as { reopenEditor?: boolean })?.reopenEditor) {
-        this.editorOpen = true;
-        showPuzzleEditor();
-      }
     });
   }
 
@@ -184,6 +184,9 @@ export class MenuScene extends Phaser.Scene {
 
     this.buttons = [easy, hard, tutorial, create];
     this.root.add(this.buttons);
+    // A rebuild while the editor overlay is up (window resize / reddit's fullscreen toggle)
+    // must not resurrect live buttons beneath it — openEditor disabled the previous set.
+    if (this.editorOpen) for (const b of this.buttons) b.setEnabled(false);
 
     // Clean-mode toggle in the top-right corner — shared with the puzzle (see decorToggle).
     const r = 20;
@@ -279,6 +282,8 @@ export class MenuScene extends Phaser.Scene {
 
     this.buttons = [play, tutorial];
     this.root.add(this.buttons);
+    // Same guard as render(): no live buttons under an open editor overlay.
+    if (this.editorOpen) for (const b of this.buttons) b.setEnabled(false);
 
     // Clean-mode toggle, shared with the puzzle, in the top-right corner.
     const r = 20;
@@ -339,10 +344,12 @@ export class MenuScene extends Phaser.Scene {
         // board's back arrow can return to this exact form — editorOpen stays true. The swap
         // is a JUMP, not a slide: it happens under the still-covering overlay, which then
         // fades out to reveal the board already in place (no menu flash, no visible sweep).
-        if (this.transitioning || isTransitioning()) return;
+        // Returns whether the jump really happened — the editor only fades itself out on
+        // success (fading over an unchanged page would strand the player outside their form).
+        if (this.transitioning || isTransitioning()) return false;
         this.sfx.drop();
         const bg = this.scene.get('BackgroundScene') as BackgroundScene;
-        jumpToPage(this, 'PuzzleScene', { puzzle, preview: true }, bg.parallaxOffset());
+        return jumpToPage(this, 'PuzzleScene', { puzzle, preview: true }, bg.parallaxOffset());
       },
     });
   }
@@ -359,7 +366,8 @@ export class MenuScene extends Phaser.Scene {
   /** Hand off to another page (puzzle / tutorial): sweep this menu off to the left while the
    *  destination slides in from the right and the background parallax leans the same way. */
   private openPage(key: string, data: Record<string, unknown>, sound: () => void) {
-    if (this.transitioning || isTransitioning()) return;
+    // editorOpen: the menu is inert beneath the editor overlay — no navigation from under it.
+    if (this.editorOpen || this.transitioning || isTransitioning()) return;
     this.transitioning = true;
     sound();
     for (const b of this.buttons) b.setEnabled(false);

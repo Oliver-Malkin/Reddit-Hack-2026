@@ -16,6 +16,14 @@ const config: Phaser.Types.Core.GameConfig = {
   type: AUTO,
   parent: 'game-container',
   backgroundColor: '#f2f0e9',
+  // Canvas-only input. Phaser's default WINDOW listeners process any click that is NOT on
+  // the canvas — including taps on the puzzle editor's full-screen DOM overlay — as a
+  // pointer-down on whatever game object sits at those coordinates. That let a tap on the
+  // editor form press a menu button underneath it and start a page transition below the
+  // overlay (surfacing as "preview opened the tutorial"). The cost of disabling them is
+  // only that 'pointerupoutside' (releases outside the canvas) no longer fires, and the
+  // canvas fills the page anyway.
+  input: { windowEvents: false },
   scale: {
     mode: Phaser.Scale.RESIZE,
     autoCenter: Phaser.Scale.CENTER_BOTH,

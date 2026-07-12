@@ -21,9 +21,10 @@ import { navigateToPost, publishPuzzle } from '../remote';
 import { findBlockedTerm } from '../../../shared/moderation';
 
 export type PuzzleEditorCallbacks = {
-  /** Preview the built puzzle now. The overlay is HIDDEN (not destroyed) so the creator can
-   *  return to their form untouched via showPuzzleEditor(). */
-  onPreview: (puzzle: Puzzle, title: string) => void;
+  /** Preview the built puzzle now. Returns whether the scenes actually swapped — only then
+   *  does the overlay HIDE itself (not destroy, so the creator can return to their form
+   *  untouched via showPuzzleEditor()). A refused swap keeps the overlay up. */
+  onPreview: (puzzle: Puzzle, title: string) => boolean;
   /** The editor was dismissed with no puzzle previewed. */
   onClose: () => void;
 };
@@ -32,6 +33,9 @@ type WordDraft = { id: string; text: string; hidden: boolean };
 type LinkDraft = { id: string; type: LinkType; from: string; to: string };
 
 const STYLE_ID = 'wf-editor-style';
+
+/** Board layout assumes a small chain — beyond this the puzzle gets unreadably cramped. */
+const MAX_WORDS = 6;
 
 // The single live editor. Kept alive (hidden) while previewing so the form's contents
 // survive a trip to the board and back.
@@ -42,9 +46,14 @@ let liveEditor: PuzzleEditor | null = null;
 type EditorDraft = { words: WordDraft[]; links: LinkDraft[]; title: string; idSeq: number };
 let savedDraft: EditorDraft | null = null;
 
-/** Open the editor overlay. Only one exists at a time. */
+/** Open the editor overlay. Only one exists at a time — if a live editor already exists
+ *  (possibly hidden mid-preview), it is re-shown with its form intact rather than silently
+ *  doing nothing, so a stranded overlay is always recoverable. */
 export function openPuzzleEditor(cb: PuzzleEditorCallbacks): void {
-  if (liveEditor) return;
+  if (liveEditor) {
+    liveEditor.show();
+    return;
+  }
   liveEditor = new PuzzleEditor(cb);
 }
 
@@ -87,6 +96,10 @@ class PuzzleEditor {
 
     this.q('.wf-back').addEventListener('click', () => this.close());
     this.q('.wf-add-word').addEventListener('click', () => {
+      if (this.words.length >= MAX_WORDS) {
+        this.showError(`A puzzle can have at most ${MAX_WORDS} words.`);
+        return;
+      }
       this.words.push(this.newWord(false));
       this.renderWords();
       this.renderLinks();
@@ -159,6 +172,10 @@ class PuzzleEditor {
 
   private renderWords() {
     this.wordListEl.replaceChildren(...this.words.map((w, i) => this.wordRow(w, i)));
+    const addBtn = this.q<HTMLButtonElement>('.wf-add-word');
+    const atCap = this.words.length >= MAX_WORDS;
+    addBtn.disabled = atCap;
+    addBtn.textContent = atCap ? `MAX ${MAX_WORDS} WORDS` : '+ ADD WORD';
   }
 
   private wordRow(word: WordDraft, index: number): HTMLElement {
@@ -306,6 +323,7 @@ class PuzzleEditor {
   private buildPuzzle(): { ok: true; puzzle: Puzzle } | { ok: false; message: string } {
     const words = this.words.map((w) => ({ ...w, text: w.text.trim() }));
     if (words.length < 2) return fail('Add at least two words.');
+    if (words.length > MAX_WORDS) return fail(`A puzzle can have at most ${MAX_WORDS} words.`);
     for (const w of words) {
       if (w.text.length === 0) return fail('Every word needs some text.');
       if (!/^[A-Z]+$/.test(w.text)) return fail(`"${w.text || '?'}" must be letters only.`);
@@ -349,8 +367,9 @@ class PuzzleEditor {
     // Order matters: the callback JUMPS the scenes underneath first (board snaps into
     // place behind this still-covering overlay), THEN the overlay fades out over it —
     // so the reveal is a clean crossfade to the board, never a glimpse of the menu.
-    this.cb.onPreview(built.puzzle, title);
-    this.fadeOut();
+    // If the jump was refused (a transition already mid-flight), stay up: fading out
+    // over whatever page is beneath would strand the player outside their form.
+    if (this.cb.onPreview(built.puzzle, title)) this.fadeOut();
   }
 
   // Pending display:none from a fadeOut — cancelled if show() lands mid-fade.
@@ -611,6 +630,8 @@ function injectStyle() {
       padding: 11px; width: 100%; cursor: pointer; margin-top: 2px;
     }
     .wf-add:active { transform: translate(1px, 2px); }
+    .wf-add:disabled { opacity: .55; cursor: default; }
+    .wf-add:disabled:active { transform: none; }
 
     .wf-empty { font-size: 12px; font-weight: 700; color: #8a8577; padding: 4px 2px 10px; }
     .wf-note { font-size: 12px; font-weight: 700; color: #8a8577; margin: -2px 0 10px; }

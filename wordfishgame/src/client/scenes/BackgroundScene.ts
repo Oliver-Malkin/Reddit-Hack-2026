@@ -772,10 +772,76 @@ export class BackgroundScene extends Phaser.Scene {
   // ---------- RESIZE ----------
 
   private handleResize(gameSize: Phaser.Structs.Size) {
+    const oldW = this.fieldWidth;
+    const oldH = this.fieldHeight;
     this.fieldWidth = gameSize.width;
     this.fieldHeight = gameSize.height;
     const o = this.GRID_OVERSCAN;
     this.grid.setSize(this.fieldWidth + o * 2, this.fieldHeight + o * 2);
+    if (oldW !== this.fieldWidth || oldH !== this.fieldHeight) {
+      this.redistributeDecor(oldW, oldH);
+    }
+  }
+
+  /**
+   * Re-spread the drifting decor over a resized field. The shapes and squiggles were
+   * stratified over the OLD extended field, and the torus wrap re-enters them on whatever
+   * the CURRENT field period is — so growing the window (reddit's fullscreen toggle)
+   * otherwise leaves a permanent empty band over the newly exposed area: the drift is
+   * diagonal (x−y invariant), so wrapped re-entries can never migrate into it. Scaling
+   * every position proportionally is measure-preserving — the even stratified spread
+   * survives — and the density-based shape count is topped up (or trimmed) for the new
+   * area so a grown field doesn't just spread the same few shapes thinner.
+   */
+  private redistributeDecor(oldW: number, oldH: number) {
+    const m = this.WRAP_MARGIN;
+
+    // Squiggles wrap over x ∈ [-m, W+m] but a tight y ∈ [-30, H+30] (see update()).
+    const sqX = (this.fieldWidth + m * 2) / (oldW + m * 2);
+    const sqY = (this.fieldHeight + 60) / (oldH + 60);
+    for (const s of this.squiggles) {
+      s.obj.x = (s.obj.x + m) * sqX - m;
+      s.obj.y = (s.obj.y + 30) * sqY - 30;
+    }
+
+    const fx = (this.fieldWidth + m * 2) / (oldW + m * 2);
+    const fy = (this.fieldHeight + m * 2) / (oldH + m * 2);
+    for (const shape of this.shapes) {
+      const nx = (shape.container.x + m) * fx - m;
+      const ny = (shape.container.y + m) * fy - m;
+      // The echo trails its body at a fixed offset, moved per-frame by the same drift
+      // delta — carry it along by this jump too. The ground/received shadows reposition
+      // themselves from the container on the next update tick.
+      if (shape.echo) {
+        shape.echo.x += nx - shape.container.x;
+        shape.echo.y += ny - shape.container.y;
+      }
+      shape.container.setPosition(nx, ny);
+    }
+
+    // Keep the ~1 shape per 290k px² density (matches spawnFloatingShapes).
+    const extW = this.fieldWidth + m * 2;
+    const extH = this.fieldHeight + m * 2;
+    const want = Math.max(8, Math.round((extW * extH) / 290_000));
+    while (this.shapes.length > want) {
+      const shape = this.shapes.pop()!;
+      shape.container.destroy(true);
+      shape.shadow.destroy();
+      shape.echo?.destroy();
+      this.disposeRecvShadow(shape);
+    }
+    let cursor = Math.floor(this.rng() * this.shapePool.length);
+    while (this.shapes.length < want) {
+      this.spawnShapeFromPool(
+        this.nextFreePoolIndex(cursor),
+        -m + this.rng() * extW,
+        -m + this.rng() * extH
+      );
+      cursor = this.shapes[this.shapes.length - 1]!.poolIndex;
+    }
+
+    // Newly spawned pieces default to visible — re-assert clean mode if it's on.
+    if (this.decorHidden) this.setDecorHidden(true);
   }
 
   /**
