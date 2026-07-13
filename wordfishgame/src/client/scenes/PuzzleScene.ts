@@ -1,5 +1,5 @@
 import * as Phaser from 'phaser';
-import { WordTile, CELL_W } from '../puzzle/WordTile';
+import { WordTile } from '../puzzle/WordTile';
 import type { TileFxName, TileHost } from '../puzzle/WordTile';
 import { bottomSafeInset } from '../viewport';
 import { Chain } from '../puzzle/Chain';
@@ -10,6 +10,7 @@ import { HelpPopup } from '../puzzle/HelpPopup';
 import { SoundFx } from '../puzzle/SoundFx';
 import { WinPopup } from '../puzzle/WinPopup';
 import { scatterHomes } from '../puzzle/scatter';
+import { tileScaleFor, graphLayout, LAYOUT_MARGIN, mulberry32, hashIds } from '../puzzle/layout';
 import { activePuzzle, puzzleForDifficulty } from '../puzzle/puzzles';
 import { getBootDailyDay } from '../puzzle/remote';
 import { galleryRows } from '../puzzle/gallery';
@@ -39,18 +40,6 @@ type PuzzleEnterData = Partial<PageEnterData> & {
 
 /** When the debug HUD is on, attribute per-frame time to tiles vs. chains. */
 const PERF = debugEnabled();
-
-/** Minimum gap between a tile's edge and the canvas edge. */
-const LAYOUT_MARGIN = 12;
-
-/**
- * Tiles are scaled so at least this many letter-cells span the canvas edge-to-edge, even
- * when the widest word is short. Without this cap a short widest word sits at full scale and
- * only ~8 cells fit across a phone (~390 logical px), leaving the chains between tiles
- * cramped; requiring ~15 roughly halves the tile size there and opens up room to read the
- * links. Wide screens are unaffected — 15 cells fit well under full scale.
- */
-const MIN_VISIBLE_CELLS = 15;
 
 /**
  * Interactive puzzle layer — runs on top of BackgroundScene. Owns the word tiles,
@@ -88,6 +77,7 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
   // Shared layout state, set by recomputeLayoutMetrics() and read by the clamps below.
   private tileScale = 1;
   private playBottom = 0;
+  private playTop = 0;
 
   constructor() {
     super('PuzzleScene');
@@ -382,6 +372,7 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     this.recomputeLayoutMetrics();
     const homes = scatterHomes(this.tileList, {
       width: this.scale.width,
+      top: this.playTop,
       bottom: this.playBottom,
       scale: this.tileScale,
       margin: LAYOUT_MARGIN,
@@ -403,19 +394,18 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     // tile could sit under the bar off-screen.
     const reserved = Math.max(this.keyboard?.reservedHeight() ?? 0, bottomSafeInset());
     this.playBottom = Math.max(H - reserved, H * 0.45);
-    const widest = Math.max(...this.tileList.map((t) => t.boxWidth));
-    const n = this.tileList.length;
-    // Base scale: the widest word fits across the canvas, capped so a minimum number of
-    // letter-cells span the width. That minimum GROWS with the tile count — a small board
-    // wants ~MIN_VISIBLE_CELLS across, a busy board needs more cells (smaller tiles) so five
-    // words don't crowd the screen. Crucially this cap is orientation-independent: an earlier
-    // landscape-only "same-row" shrink made tiles jump LARGER the moment the window narrowed
-    // past the portrait threshold, and it's dead logic now that every tile gets its own row
-    // (see computeSlots).
-    const minCells = MIN_VISIBLE_CELLS + Math.max(0, n - 3) * 3;
-    const maxScale = Math.min(1, W / (minCells * CELL_W));
-    const scale = Phaser.Math.Clamp((W - LAYOUT_MARGIN * 2) / widest, 0.4, maxScale);
-    this.tileScale = scale;
+    // Top of the play band sits below the corner controls so tiles never spawn under them.
+    const r = this.buttons[0]?.radius ?? 20;
+    this.playTop = LAYOUT_MARGIN + 4 + r * 2 + 12;
+    // One scale for every tile: the widest word fits across the canvas, capped so a minimum
+    // number of cells span the width, no tile exceeds half the viewport, AND (crucial on a
+    // short-and-wide canvas, e.g. landscape with the keyboard open) the tiles' height/area fit
+    // the play band too — see layout.tileScaleFor.
+    this.tileScale = tileScaleFor(
+      W,
+      this.playBottom - this.playTop,
+      this.tileList.map((t) => t.boxWidth)
+    );
     for (const t of this.tileList) t.setBaseScale(this.tileScale);
     for (const c of this.chains) c.setLayoutScale(this.tileScale);
   }
@@ -431,10 +421,11 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     return Phaser.Math.Clamp(y, half, this.playBottom - half);
   }
 
-  /** The default home positions, one per tile (portrait stacks; landscape zigzags). */
+  /** The default home positions, one per tile. Gallery keeps its fixed two-column rows; a real
+   *  puzzle is laid out by the graph relaxer (see layout.graphLayout) so linked words sit a
+   *  comfortable rope apart, nothing overlaps, and the cluster floats off the edges. */
   private computeSlots(): { x: number; y: number }[] {
     const W = this.scale.width;
-    const H = this.scale.height;
     const availH = this.playBottom;
     const n = this.tileList.length;
 
@@ -448,47 +439,22 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
       }));
     }
 
-    const portrait = W < H * 0.9;
-
-    // Every tile gets its OWN y, stepping monotonically down the play band and spaced by at
-    // least a full tile height, so two tiles can never share a row and collide. The old
-    // landscape layout placed tiles on just two alternating rows, which overlapped badly when
-    // a board had several wide words on the same row (see the hard daily). x still zig-zags —
-    // narrow in portrait, a wide diagonal in landscape — so the chains read as diagonals.
-    const tileH = (this.tileList[0]?.boxHeight ?? 58) * this.tileScale;
-    // Spacing between tile centres is bounded on BOTH sides: at least a full tile height so
-    // tiles never overlap, and at most ~2.4× so a tall play area (e.g. the keyboard tucked
-    // away, giving the full screen height) doesn't fling the tiles apart to the far edges and
-    // run the chain to the very bottom. The bounded stack is then centred vertically in the
-    // play area, so it sits comfortably in the middle by default rather than reaching an edge.
-    // (Dragging or shuffling can still park a tile low — that's the player's call; this only
-    // governs the default home layout.)
-    const minGap = tileH + 16;
-    const maxGap = tileH * 2.4;
-    const bandTop = Math.max(64, availH * 0.14);
-    const bandBottom = availH - Math.max(52, availH * 0.1);
-    let step = n > 1 ? (bandBottom - bandTop) / (n - 1) : 0;
-    step = Phaser.Math.Clamp(step, minGap, maxGap);
-    const totalH = step * (n - 1);
-    // Centre the stack in the play area; never start above the top controls, and if the
-    // min-gap forced it taller than the space (many tiles on a short screen) the drag clamp
-    // keeps the lowest tiles onscreen.
-    const top = Math.max(bandTop, (availH - totalH) / 2);
-
-    // x fraction across the canvas: portrait alternates two narrow columns; landscape spreads
-    // into a diagonal (single tile centred), so the stepped-down tiles read as a diagonal.
-    // The landscape span is kept off the far edges (0.2–0.8, not 0.12–0.88) so a wide word's
-    // tile isn't jammed against the canvas edge and the chains don't run edge-to-edge.
-    const fxFor = (i: number): number => {
-      if (portrait) return i % 2 === 0 ? 0.32 : 0.68;
-      if (n === 1) return 0.5;
-      return 0.2 + (0.6 * i) / (n - 1);
-    };
-
-    return this.tileList.map((tile, i) => ({
-      x: this.clampX(tile, W * fxFor(i)),
-      y: top + step * i,
+    const layoutTiles = this.tileList.map((t) => ({
+      id: t.wordId,
+      boxWidth: t.boxWidth,
+      boxHeight: t.boxHeight,
     }));
+    const homes = graphLayout(layoutTiles, this.currentPuzzle.links, {
+      width: W,
+      top: this.playTop,
+      bottom: this.playBottom,
+      scale: this.tileScale,
+      margin: LAYOUT_MARGIN,
+      // Seed the (tie-break-only) RNG off the puzzle so the same board lays out identically
+      // every load and glides — rather than jumps — on resize.
+      rand: mulberry32(hashIds(this.tileList.map((t) => t.wordId))),
+    });
+    return this.tileList.map((tile) => homes.get(tile.wordId) ?? { x: W / 2, y: availH / 2 });
   }
 
   private positionButtons() {

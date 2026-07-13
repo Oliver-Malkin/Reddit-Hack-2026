@@ -27,7 +27,7 @@ export type CoachStep = {
 
 const MARGIN = 16;
 const PAD = 18;
-const MAX_W = 360;
+const MAX_W = 340;
 const BTN_H = 34;
 // The dim extends this far past every edge so a small camera move (the wrong-answer shake,
 // or a page still settling) can never uncover an un-dimmed strip at the border.
@@ -84,8 +84,10 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
     // Shrink the bubble on a small window so it doesn't swamp the board (and can't be larger
     // than the space it's meant to leave clear). ~1 on a comfortable window; the height term
     // handles short landscape windows where the text box would otherwise fill the screen.
+    // Grows a little on a roomy desktop window (up to 1.1), shrinks to fit a small phone
+    // (down to 0.6) — same dynamic-scaling idea as WinPopup's popupScaleFor.
     const safeH = H - bottomSafeInset();
-    this.bubbleScale = Phaser.Math.Clamp(Math.min(W / 430, safeH / 620), 0.68, 1);
+    this.bubbleScale = Phaser.Math.Clamp(Math.min(W / 420, safeH / 600), 0.6, 1.1);
     bubble.setScale(this.bubbleScale); // final size, so positioning uses the scaled bounds
 
     this.refreshSpotlight();
@@ -238,7 +240,9 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
     // the edge (matching the word tiles and the win card).
     c.on('drag', (_p: Phaser.Input.Pointer, dragX: number, dragY: number) => {
       const W = scene.scale.width;
-      const H = scene.scale.height - bottomSafeInset(); // stay clear of the URL-bar strip
+      // Stay clear of the URL-bar strip AND the keyboard (bottomLimit is its top) — the coach
+      // must not be draggable down over/under the keys, matching the word tiles' clamp.
+      const H = Math.min(scene.scale.height - bottomSafeInset(), this.bottomLimit);
       // Account for the viewport scale so the (possibly shrunk) card is clamped by its real
       // on-screen size, not its unscaled design size.
       const halfW = (cardW * c.scaleX) / 2;

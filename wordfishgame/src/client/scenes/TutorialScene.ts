@@ -10,6 +10,7 @@ import { SoundFx } from '../puzzle/SoundFx';
 import { TutorialCoach } from '../puzzle/TutorialCoach';
 import type { CoachStep } from '../puzzle/TutorialCoach';
 import { scatterHomes } from '../puzzle/scatter';
+import { tileScaleFor } from '../puzzle/layout';
 import { bottomSafeInset } from '../viewport';
 import { PALETTE } from '../theme';
 import { slideCameraIn, transitionToPage, isTransitioning, SLIDE_DURATION } from './pageTransition';
@@ -170,12 +171,19 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
     // no tile's home slot — or a dragged tile — lands off-screen behind the bar.
     const reserved = Math.max(this.keyboard?.reservedHeight() ?? 0, bottomSafeInset());
     const playBottom = (this.playBottom = Math.max(H - reserved, H * 0.45));
+    // Top of the play band sits below the corner controls, same as the real board.
+    const r = this.buttons[0]?.radius ?? 20;
+    const playTop = LAYOUT_MARGIN + 4 + r * 2 + 12;
 
-    const widest = Math.max(...this.tileList.map((t) => t.boxWidth));
     const portrait = W < H * 0.9;
-    let scale = Phaser.Math.Clamp((W - LAYOUT_MARGIN * 2) / widest, 0.4, 1);
-    // Landscape sits SAD and EMOTION side by side across the top, so they mustn't collide.
-    if (!portrait) scale = Math.min(scale, Phaser.Math.Clamp((W * 0.5 - 40) / widest, 0.4, 1));
+    // Same sizing rule as the real board (see layout.tileScaleFor): the widest tile never
+    // exceeds half the viewport and the tiles' height/area fit the play band, which keeps the
+    // three example tiles compact instead of filling the screen.
+    const scale = tileScaleFor(
+      W,
+      playBottom - playTop,
+      this.tileList.map((t) => t.boxWidth)
+    );
     this.tileScale = scale;
     for (const t of this.tileList) t.setBaseScale(scale);
     for (const c of this.chains) c.setLayoutScale(scale);
@@ -297,8 +305,10 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
   private shuffleTiles() {
     if (this.tileList.length === 0 || this.help) return;
     this.sfx.drop();
+    const r = this.buttons[0]?.radius ?? 20;
     const homes = scatterHomes(this.tileList, {
       width: this.scale.width,
+      top: LAYOUT_MARGIN + 4 + r * 2 + 12, // below the corner controls
       bottom: this.playBottom,
       scale: this.tileScale,
       margin: LAYOUT_MARGIN,

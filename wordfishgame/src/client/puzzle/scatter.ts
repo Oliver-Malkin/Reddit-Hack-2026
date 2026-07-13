@@ -17,7 +17,9 @@ export type ScatterTile = { boxWidth: number; boxHeight: number };
 export type ScatterOpts = {
   /** Canvas width. */
   width: number;
-  /** Bottom of the play band (top is 0) — usually just above the keyboard. */
+  /** Top of the play band — below the corner controls (defaults to 0). */
+  top?: number;
+  /** Bottom of the play band — usually just above the keyboard. */
   bottom: number;
   /** Shared tile scale for the current canvas. */
   scale: number;
@@ -40,15 +42,16 @@ export function scatterHomes(tiles: ScatterTile[], o: ScatterOpts): { x: number;
   const homes: { x: number; y: number }[] = [];
 
   for (const t of tiles) {
+    const top = o.top ?? 0;
     const hw = (t.boxWidth / 2) * o.scale + o.margin;
     const hh = (t.boxHeight / 2) * o.scale + o.margin;
     const minX = hw;
     const maxX = o.width - hw;
-    const minY = hh;
+    const minY = top + hh;
     const maxY = o.bottom - hh;
     // If a tile is wider/taller than the space, pin it to the centre on that axis.
     const drawX = () => (maxX > minX ? minX + rand() * (maxX - minX) : o.width / 2);
-    const drawY = () => (maxY > minY ? minY + rand() * (maxY - minY) : o.bottom / 2);
+    const drawY = () => (maxY > minY ? minY + rand() * (maxY - minY) : (top + o.bottom) / 2);
 
     let best = { x: drawX(), y: drawY() };
     let bestClear = -Infinity;
