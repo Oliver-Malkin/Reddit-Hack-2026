@@ -6,6 +6,7 @@ import {
   setCurrentDailyPostId,
   setDailyDay,
 } from './dailyStore';
+import { getShareImageUrl } from './shareImage';
 
 /**
  * Publish today's daily WordFish post and make it the pinned announcement.
@@ -20,9 +21,11 @@ import {
 export const publishDailyPost = async (): Promise<Post> => {
   const day = utcDayNumber();
   const previousId = await getCurrentDailyPostId();
+  const shareImageUrl = await getShareImageUrl();
 
   const post = await reddit.submitCustomPost({
     title: `WordFish — daily puzzle for ${utcDayLabel(day)}`,
+    styles: shareImageUrl ? { shareImageUrl } : undefined,
   });
 
   await setDailyDay(post.id, day);
@@ -50,7 +53,9 @@ export const publishDailyPost = async (): Promise<Post> => {
  *  keyed by the returned post id (see puzzleStore); opening the post loads it. Community
  *  puzzles are never pinned — only the daily is. */
 export const createPuzzlePost = async (title: string) => {
+  const shareImageUrl = await getShareImageUrl();
   return await reddit.submitCustomPost({
     title: `WordFish: ${title}`,
+    styles: shareImageUrl ? { shareImageUrl } : undefined,
   });
 };
