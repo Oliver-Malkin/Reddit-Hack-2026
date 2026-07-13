@@ -7,7 +7,7 @@ import { media, redis } from '@devvit/web/server';
  * see assets/share-image.png (a static capture of splash.ts's rendering).
  */
 const SOURCE_URL =
-  'https://raw.githubusercontent.com/Oliver-Malkin/Reddit-Hack-2026/main/wordfishgame/assets/share-image.png';
+  'https://raw.githubusercontent.com/Oliver-Malkin/Reddit-Hack-2026/6b9f7874de02b7d99943f29f3f3ea0e3115c1364/wordfishgame/assets/share-image.png';
 const CACHE_KEY = 'shareImageUrl';
 
 /** Reddit's media host only needs to be given the source URL once — the resulting
