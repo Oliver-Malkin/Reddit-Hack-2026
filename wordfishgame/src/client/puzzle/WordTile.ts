@@ -5,7 +5,7 @@ import { bottomSafeInset } from '../viewport';
 /** One letter cell's width. Exported so the scene can size tiles to fit a target number of
  *  cells across the canvas (see PuzzleScene.recomputeLayoutMetrics). */
 export const CELL_W = 46;
-const CELL_H = 58;
+export const CELL_H = 58;
 const RADIUS = 10;
 const BORDER = 5;
 const SHADOW_OFFSET = 6;

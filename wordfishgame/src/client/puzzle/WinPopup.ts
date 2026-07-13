@@ -2,16 +2,26 @@ import * as Phaser from 'phaser';
 import { PALETTE, UI_FONT } from '../theme';
 import { bottomSafeInset } from '../viewport';
 
-const PANEL_W = 340;
+// Design-size dimensions — the whole card is then uniformly scaled to the viewport (see
+// popupScaleFor), so these are what it looks like at scale 1 on a comfortable desktop window,
+// not a fixed on-screen size.
+const PANEL_W = 320;
 // Fits a single-line subtitle ("The word was APPLE"); grows downward when the subtitle
 // wraps to more lines (a hard "path5" chain can reveal three hidden words at once, which
 // used to spill the subtitle text past the card's edge — see below).
-const BASE_PANEL_H = 220;
+const BASE_PANEL_H = 208;
 const RADIUS = 16;
 const BORDER = 6;
-const BTN_W = 190;
-const BTN_H = 46;
+const BTN_W = 182;
+const BTN_H = 44;
 const SUBTITLE_INSET = 28; // clear margin each side so wrapped text never touches the border
+
+/** Uniform scale for the whole card, based on the current viewport — grows a little on a
+ *  roomy desktop window, shrinks on a small phone, same idea as TutorialCoach's bubbleScale. */
+function popupScaleFor(W: number, H: number): number {
+  const safeH = H - bottomSafeInset();
+  return Phaser.Math.Clamp(Math.min(W / 480, safeH / 560), 0.62, 1.15);
+}
 
 export type WinPopupOptions = {
   /** The solved hidden word(s), shown in the subtitle. */
@@ -62,7 +72,7 @@ export class WinPopup extends Phaser.GameObjects.Container {
     const lineHeight = subtitle.height / lineCount;
     this.panelH = BASE_PANEL_H + lineHeight * (lineCount - 1);
     const panelH = this.panelH;
-    subtitle.setY(-panelH / 2 + 88);
+    subtitle.setY(-panelH / 2 + 78);
 
     // Offset shadow + panel.
     const panel = scene.add.graphics();
@@ -104,9 +114,9 @@ export class WinPopup extends Phaser.GameObjects.Container {
     });
     this.add(dragHandle);
 
-    const title = scene.add.text(0, -panelH / 2 + 52, 'YOU WIN!', {
+    const title = scene.add.text(0, -panelH / 2 + 48, 'YOU WIN!', {
       fontFamily: UI_FONT,
-      fontSize: '36px',
+      fontSize: '34px',
       fontStyle: '900',
       color: '#1c1c1c',
     });
@@ -191,13 +201,16 @@ export class WinPopup extends Phaser.GameObjects.Container {
     scene.add.existing(this);
     this.setDepth(100);
 
-    // Spring in.
+    // Spring in, settling at the viewport-scaled size (see popupScaleFor) rather than a fixed
+    // 1 — so the card is a comfortable size on a roomy desktop window and shrinks to fit a
+    // small phone, instead of always rendering at its design size regardless of the screen.
+    const cardScale = popupScaleFor(scene.scale.width, scene.scale.height);
     this.setScale(0);
     this.setRotation(-0.04);
     scene.tweens.add({
       targets: this,
-      scaleX: 1,
-      scaleY: 1,
+      scaleX: cardScale,
+      scaleY: cardScale,
       rotation: 0,
       duration: 420,
       ease: 'Back.easeOut',
@@ -225,8 +238,10 @@ export class WinPopup extends Phaser.GameObjects.Container {
     const W = this.scene.scale.width;
     // Treat the screen as ending above the URL-bar strip so the card can't be nudged under it.
     const H = this.scene.scale.height - bottomSafeInset();
-    const halfW = PANEL_W / 2;
-    const halfH = this.panelH / 2;
+    // Account for the viewport scale so the (possibly grown/shrunk) card is clamped by its
+    // real on-screen size, not its unscaled design size.
+    const halfW = (PANEL_W * this.scaleX) / 2;
+    const halfH = (this.panelH * this.scaleY) / 2;
     return {
       x: halfW > W - halfW ? W / 2 : Phaser.Math.Clamp(x, halfW, W - halfW),
       y: halfH > H - halfH ? H / 2 : Phaser.Math.Clamp(y, halfH, H - halfH),
