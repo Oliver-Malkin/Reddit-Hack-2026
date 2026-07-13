@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { PALETTE, UI_FONT } from '../theme';
+import { bottomSafeInset } from '../viewport';
 
 /** One styled piece of an example line: a bold WORD, a muted connective/symbol, or a
  *  word whose individual letters are highlighted per `mask` (used to show letter subsets). */
@@ -138,6 +139,10 @@ export class HelpPopup extends Phaser.GameObjects.Container {
     const scene = this.scene;
     const W = scene.scale.width;
     const H = scene.scale.height;
+    // The card is sized and centred within the safe area (the visible screen above the URL-bar
+    // strip — see bottomSafeInset), so on a phone it isn't laid out running off the bottom.
+    // The dim itself still covers the whole canvas.
+    const safeH = H - bottomSafeInset();
 
     // Full-canvas dim + a matching hit zone that closes on tap.
     this.overlay.clear();
@@ -151,9 +156,9 @@ export class HelpPopup extends Phaser.GameObjects.Container {
     });
 
     const outerMaxW = W - MARGIN * 2;
-    const outerMaxH = H - MARGIN * 2;
+    const outerMaxH = safeH - MARGIN * 2;
     this.panel.removeAll(true);
-    this.panel.setPosition(W / 2, H / 2);
+    this.panel.setPosition(W / 2, safeH / 2);
 
     // Build the content FIRST, then size the card to hug it — so the box grows and
     // shrinks with the text (up to two columns when there's room) instead of leaving

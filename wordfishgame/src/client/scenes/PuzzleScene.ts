@@ -1,6 +1,7 @@
 import * as Phaser from 'phaser';
-import { WordTile } from '../puzzle/WordTile';
+import { WordTile, CELL_W } from '../puzzle/WordTile';
 import type { TileFxName, TileHost } from '../puzzle/WordTile';
+import { bottomSafeInset } from '../viewport';
 import { Chain } from '../puzzle/Chain';
 import { OnScreenKeyboard } from '../puzzle/Keyboard';
 import { IconButton } from '../puzzle/IconButton';
@@ -10,6 +11,7 @@ import { SoundFx } from '../puzzle/SoundFx';
 import { WinPopup } from '../puzzle/WinPopup';
 import { scatterHomes } from '../puzzle/scatter';
 import { activePuzzle, puzzleForDifficulty } from '../puzzle/puzzles';
+import { getBootDailyDay } from '../puzzle/remote';
 import { galleryRows } from '../puzzle/gallery';
 import type { Difficulty, Puzzle } from '../puzzle/types';
 import { PALETTE } from '../theme';
@@ -40,6 +42,15 @@ const PERF = debugEnabled();
 
 /** Minimum gap between a tile's edge and the canvas edge. */
 const LAYOUT_MARGIN = 12;
+
+/**
+ * Tiles are scaled so at least this many letter-cells span the canvas edge-to-edge, even
+ * when the widest word is short. Without this cap a short widest word sits at full scale and
+ * only ~8 cells fit across a phone (~390 logical px), leaving the chains between tiles
+ * cramped; requiring ~15 roughly halves the tile size there and opens up room to read the
+ * links. Wide screens are unaffected — 15 cells fit well under full scale.
+ */
+const MIN_VISIBLE_CELLS = 15;
 
 /**
  * Interactive puzzle layer — runs on top of BackgroundScene. Owns the word tiles,
@@ -147,7 +158,11 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
   /** Build the daily puzzle for a difficulty onto the (already cleared) board. */
   private loadPuzzle(difficulty: Difficulty) {
     this.currentDifficulty = difficulty;
-    this.currentPuzzle = puzzleForDifficulty(difficulty);
+    // A daily post is frozen to the day it was created (getBootDailyDay); fall back to the
+    // live UTC day for local preview / legacy posts (puzzleForDifficulty's default).
+    const day = getBootDailyDay();
+    this.currentPuzzle =
+      day != null ? puzzleForDifficulty(difficulty, day) : puzzleForDifficulty(difficulty);
     this.buildPuzzle(this.currentPuzzle);
   }
 
@@ -383,19 +398,23 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
   private recomputeLayoutMetrics() {
     const W = this.scale.width;
     const H = this.scale.height;
-    this.playBottom = Math.max(H - (this.keyboard?.reservedHeight() ?? 0), H * 0.45);
+    // Keep the play area clear of BOTH the keyboard and the bottom-unsafe strip behind the
+    // browser's URL bar (see bottomSafeInset) — otherwise a tile's home slot or a dragged
+    // tile could sit under the bar off-screen.
+    const reserved = Math.max(this.keyboard?.reservedHeight() ?? 0, bottomSafeInset());
+    this.playBottom = Math.max(H - reserved, H * 0.45);
     const widest = Math.max(...this.tileList.map((t) => t.boxWidth));
     const n = this.tileList.length;
-    // Base scale: the widest word fits across the canvas.
-    let scale = Phaser.Math.Clamp((W - LAYOUT_MARGIN * 2) / widest, 0.4, 1);
-    // In the landscape zigzag, words share two rows (alternating), so tiles two apart in
-    // index sit side by side. Shrink enough that same-row neighbours don't collide.
-    const portrait = W < H * 0.9;
-    if (MODE === 'puzzle' && !portrait && n > 2) {
-      const gap = 40;
-      const sameRowCenters = (W * 0.76 * 2) / (n - 1); // matches the fx step in computeSlots
-      scale = Math.min(scale, Phaser.Math.Clamp((sameRowCenters - gap) / widest, 0.4, 1));
-    }
+    // Base scale: the widest word fits across the canvas, capped so a minimum number of
+    // letter-cells span the width. That minimum GROWS with the tile count — a small board
+    // wants ~MIN_VISIBLE_CELLS across, a busy board needs more cells (smaller tiles) so five
+    // words don't crowd the screen. Crucially this cap is orientation-independent: an earlier
+    // landscape-only "same-row" shrink made tiles jump LARGER the moment the window narrowed
+    // past the portrait threshold, and it's dead logic now that every tile gets its own row
+    // (see computeSlots).
+    const minCells = MIN_VISIBLE_CELLS + Math.max(0, n - 3) * 3;
+    const maxScale = Math.min(1, W / (minCells * CELL_W));
+    const scale = Phaser.Math.Clamp((W - LAYOUT_MARGIN * 2) / widest, 0.4, maxScale);
     this.tileScale = scale;
     for (const t of this.tileList) t.setBaseScale(this.tileScale);
     for (const c of this.chains) c.setLayoutScale(this.tileScale);
@@ -430,23 +449,46 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     }
 
     const portrait = W < H * 0.9;
-    return this.tileList.map((tile, i) => {
-      if (portrait) {
-        // Stack down the canvas, nudged alternately so chains still read as diagonals.
-        // Wider x alternation than the landscape zigzag needs, since here it's the only
-        // thing keeping consecutive (already close, same-column-ish) tiles' chains legible.
-        const bandTop = Math.max(64, availH * 0.16);
-        const bandBottom = availH - Math.max(56, availH * 0.12);
-        const step = n > 1 ? (bandBottom - bandTop) / (n - 1) : 0;
-        return { x: this.clampX(tile, W * (i % 2 === 0 ? 0.32 : 0.68)), y: bandTop + step * i };
-      }
-      // The mock's gentle zigzag across the middle band. Wide enough on both axes that a
-      // short puzzle (few tiles, so a short chain) still gets a chain long enough to read
-      // clearly — a fixed narrow band left visible slack unused on small puzzles while
-      // starving the chain's arc length (see Chain.ts's fade-when-short behaviour).
-      const fx = n === 1 ? 0.5 : 0.12 + (0.76 * i) / (n - 1);
-      return { x: this.clampX(tile, W * fx), y: availH * (0.5 + (i % 2 === 0 ? -0.22 : 0.19)) };
-    });
+
+    // Every tile gets its OWN y, stepping monotonically down the play band and spaced by at
+    // least a full tile height, so two tiles can never share a row and collide. The old
+    // landscape layout placed tiles on just two alternating rows, which overlapped badly when
+    // a board had several wide words on the same row (see the hard daily). x still zig-zags —
+    // narrow in portrait, a wide diagonal in landscape — so the chains read as diagonals.
+    const tileH = (this.tileList[0]?.boxHeight ?? 58) * this.tileScale;
+    // Spacing between tile centres is bounded on BOTH sides: at least a full tile height so
+    // tiles never overlap, and at most ~2.4× so a tall play area (e.g. the keyboard tucked
+    // away, giving the full screen height) doesn't fling the tiles apart to the far edges and
+    // run the chain to the very bottom. The bounded stack is then centred vertically in the
+    // play area, so it sits comfortably in the middle by default rather than reaching an edge.
+    // (Dragging or shuffling can still park a tile low — that's the player's call; this only
+    // governs the default home layout.)
+    const minGap = tileH + 16;
+    const maxGap = tileH * 2.4;
+    const bandTop = Math.max(64, availH * 0.14);
+    const bandBottom = availH - Math.max(52, availH * 0.1);
+    let step = n > 1 ? (bandBottom - bandTop) / (n - 1) : 0;
+    step = Phaser.Math.Clamp(step, minGap, maxGap);
+    const totalH = step * (n - 1);
+    // Centre the stack in the play area; never start above the top controls, and if the
+    // min-gap forced it taller than the space (many tiles on a short screen) the drag clamp
+    // keeps the lowest tiles onscreen.
+    const top = Math.max(bandTop, (availH - totalH) / 2);
+
+    // x fraction across the canvas: portrait alternates two narrow columns; landscape spreads
+    // into a diagonal (single tile centred), so the stepped-down tiles read as a diagonal.
+    // The landscape span is kept off the far edges (0.2–0.8, not 0.12–0.88) so a wide word's
+    // tile isn't jammed against the canvas edge and the chains don't run edge-to-edge.
+    const fxFor = (i: number): number => {
+      if (portrait) return i % 2 === 0 ? 0.32 : 0.68;
+      if (n === 1) return 0.5;
+      return 0.2 + (0.6 * i) / (n - 1);
+    };
+
+    return this.tileList.map((tile, i) => ({
+      x: this.clampX(tile, W * fxFor(i)),
+      y: top + step * i,
+    }));
   }
 
   private positionButtons() {

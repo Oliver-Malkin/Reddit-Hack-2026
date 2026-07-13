@@ -8,6 +8,7 @@ import type {
 } from '../../shared/api';
 import { createPuzzlePost } from '../core/post';
 import { cleanTitle, loadPuzzle, savePuzzle, validatePuzzle } from '../core/puzzleStore';
+import { getDailyDay } from '../core/dailyStore';
 import { findBlockedTerm } from '../../shared/moderation';
 
 type ErrorResponse = {
@@ -32,10 +33,11 @@ api.get('/init', async (c) => {
   }
 
   try {
-    const [count, username, stored] = await Promise.all([
+    const [count, username, stored, dailyDay] = await Promise.all([
       redis.get('count'),
       reddit.getCurrentUsername(),
       loadPuzzle(postId),
+      getDailyDay(postId),
     ]);
 
     return c.json<InitResponse>({
@@ -52,6 +54,8 @@ api.get('/init', async (c) => {
             postUrl: `https://reddit.com/r/${context.subredditName}/comments/${postId}`,
           }
         : {}),
+      // Present on a daily post: which day's board to show (frozen at creation).
+      ...(dailyDay != null ? { dailyDay } : {}),
     });
   } catch (error) {
     console.error(`API Init Error for post ${postId}:`, error);
