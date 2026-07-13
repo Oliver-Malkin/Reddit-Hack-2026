@@ -846,19 +846,28 @@ function drawChainGlyph(ctx: CanvasRenderingContext2D, type: LinkType) {
       ctx.stroke();
       break;
     case 'hypernym': {
-      // yellow chevron pointing +x
+      // yellow curly brace "}": nub points +x (at the narrow member), mouth opens -x (the broad category)
+      const H = 9.5;
+      const sx = -1.5;
+      const nub = 5;
+      const tip = -5.5;
+      const curl = 3.2;
       const path = () => {
         ctx.beginPath();
-        ctx.moveTo(-5.5, -8.5);
-        ctx.lineTo(7, 0);
-        ctx.lineTo(-5.5, 8.5);
+        ctx.moveTo(tip, -H);
+        ctx.quadraticCurveTo(sx, -H, sx, -H + curl);
+        ctx.lineTo(sx, -curl);
+        ctx.quadraticCurveTo(sx, 0, nub, 0);
+        ctx.quadraticCurveTo(sx, 0, sx, curl);
+        ctx.lineTo(sx, H - curl);
+        ctx.quadraticCurveTo(sx, H, tip, H);
       };
       path();
-      ctx.lineWidth = 8;
+      ctx.lineWidth = 6;
       ctx.strokeStyle = C.ink;
       ctx.stroke();
       path();
-      ctx.lineWidth = 4.5;
+      ctx.lineWidth = 3;
       ctx.strokeStyle = C.yellow;
       ctx.stroke();
       break;

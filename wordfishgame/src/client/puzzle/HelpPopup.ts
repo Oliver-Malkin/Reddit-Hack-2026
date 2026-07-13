@@ -14,9 +14,9 @@ type KeyRow = {
   name: string;
   meaning: string;
   example: ExampleSeg[];
-  /** Mirror the key icon horizontally. The baked chevron points apex-right (at the narrower
-   *  word); when the example reads specific-first (e.g. "ROBIN is a BIRD"), the narrower word
-   *  is on the LEFT, so the chevron must point left to agree. */
+  /** Mirror the key icon horizontally. The baked brace nubs RIGHT (at the narrow member), its
+   *  mouth opening toward the broad category on the left; the example reads specific-first
+   *  ("ROBIN is a BIRD"), so it flips to nub-left — narrowing at ROBIN, opening toward BIRD. */
   flipIcon?: boolean;
 };
 
@@ -40,11 +40,12 @@ const KEY_ROWS: KeyRow[] = [
     example: [{ kind: 'word', text: 'HOT' }, { kind: 'op', text: '≠' }, { kind: 'word', text: 'COLD' }],
   },
   {
-    tex: 'chain-chevron-yellow',
+    tex: 'chain-brace-yellow',
     name: 'Is a',
     meaning: 'One is a kind of the other',
     example: [{ kind: 'word', text: 'ROBIN' }, { kind: 'op', text: 'is a' }, { kind: 'word', text: 'BIRD' }],
-    // "ROBIN is a BIRD" reads specific→general, so the chevron points back at ROBIN.
+    // "ROBIN is a BIRD" reads specific→general: flip so the nub narrows at ROBIN and the
+    // mouth opens toward the broader BIRD (small → large, left to right).
     flipIcon: true,
   },
   {

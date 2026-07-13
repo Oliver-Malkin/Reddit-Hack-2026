@@ -279,8 +279,8 @@ class PuzzleEditor {
       syncTypeHint();
     });
 
-    // The arrow makes each row read as a sentence ("FISH · letters hide in → FOOLISH") and
-    // shows which way a directional link points — swap the two words to reverse it.
+    // The row reads as a sentence — WORD · relation → WORD. The arrow shows which way a
+    // directional link points; swap the two words to reverse it.
     const arrow = el('span', 'wf-arrow');
     arrow.textContent = '→';
 
@@ -564,14 +564,17 @@ function injectStyle() {
       /* Reserve the scrollbar's lane up front — without this the centred card nudges
          sideways the instant content grows past one screen (rows added / error shown). */
       scrollbar-gutter: stable;
-      display: flex; justify-content: center;
+      /* align-items:flex-start (not the default stretch) so the card sizes to its content
+         instead of being pinned to viewport height — otherwise a card taller than the screen
+         strands its bottom padding mid-scroll and the action buttons end up flush. */
+      display: flex; justify-content: center; align-items: flex-start;
       opacity: 0; transition: opacity .2s ease;
     }
     .wf-editor.wf-open { opacity: 1; }
     /* Entrance is a plain fade — a translate here read as the page "shifting" after load. */
     .wf-ed-card {
-      width: 100%; max-width: 440px;
-      padding: 18px 18px 40px; box-sizing: border-box;
+      width: 100%; max-width: 500px;
+      padding: 18px 18px calc(56px + env(safe-area-inset-bottom, 0px)); box-sizing: border-box;
     }
 
     .wf-ed-head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
@@ -613,8 +616,11 @@ function injectStyle() {
     .wf-seg-btn.wf-on { background: ${yellow}; }
     .wf-seg-btn:nth-child(2).wf-on { background: ${pink}; color: #fff; }
 
+    /* One row reads as a sentence: WORD · relation → WORD. The relation select takes the
+       largest share (its labels are the longest); the two word selects flank it. Labels are
+       kept terse (no "means " prefix) so nothing clips on the single row. */
     .wf-link .wf-select { flex: 1 1 0; min-width: 0; }
-    .wf-link .wf-type { flex: 1.4 1 0; }
+    .wf-link .wf-type { flex: 2 1 0; }
 
     .wf-del {
       flex: 0 0 auto; width: 36px; height: 36px; border-radius: 10px;
