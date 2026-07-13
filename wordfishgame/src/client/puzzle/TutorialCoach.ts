@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { PALETTE, UI_FONT } from '../theme';
+import { bottomSafeInset } from '../viewport';
 
 /** A nav/action button in the coach bubble. */
 export type CoachButton = { label: string; onTap: () => void; primary?: boolean };
@@ -50,6 +51,9 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
   private placement: 'auto' | 'top' | 'bottom' = 'auto';
   // Lowest y the bubble may reach — kept above the (un-dimmed) keyboard.
   private bottomLimit = Number.POSITIVE_INFINITY;
+  // Uniform scale applied to the whole bubble so it shrinks on small viewports instead of
+  // hogging the board (set per show() from the canvas size).
+  private bubbleScale = 1;
 
   constructor(scene: Phaser.Scene) {
     super(scene, 0, 0);
@@ -77,12 +81,26 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
     this.add(bubble);
     this.bubble = bubble;
 
+    // Shrink the bubble on a small window so it doesn't swamp the board (and can't be larger
+    // than the space it's meant to leave clear). ~1 on a comfortable window; the height term
+    // handles short landscape windows where the text box would otherwise fill the screen.
+    const safeH = H - bottomSafeInset();
+    this.bubbleScale = Phaser.Math.Clamp(Math.min(W / 430, safeH / 620), 0.68, 1);
+    bubble.setScale(this.bubbleScale); // final size, so positioning uses the scaled bounds
+
     this.refreshSpotlight();
     const targetNow = this.targetFn ? this.targetFn() : null;
     this.positionBubble(bubble, targetNow, W, H);
 
-    bubble.setScale(0.92).setAlpha(0);
-    scene.tweens.add({ targets: bubble, scale: 1, alpha: 1, duration: 240, ease: 'Back.easeOut' });
+    // Pop in from a touch smaller, settling at the viewport scale.
+    bubble.setScale(this.bubbleScale * 0.92).setAlpha(0);
+    scene.tweens.add({
+      targets: bubble,
+      scale: this.bubbleScale,
+      alpha: 1,
+      duration: 240,
+      ease: 'Back.easeOut',
+    });
 
     if (!this.revealed) {
       this.revealed = true;
@@ -220,9 +238,11 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
     // the edge (matching the word tiles and the win card).
     c.on('drag', (_p: Phaser.Input.Pointer, dragX: number, dragY: number) => {
       const W = scene.scale.width;
-      const H = scene.scale.height;
-      const halfW = cardW / 2;
-      const halfH = cardH / 2;
+      const H = scene.scale.height - bottomSafeInset(); // stay clear of the URL-bar strip
+      // Account for the viewport scale so the (possibly shrunk) card is clamped by its real
+      // on-screen size, not its unscaled design size.
+      const halfW = (cardW * c.scaleX) / 2;
+      const halfH = (cardH * c.scaleY) / 2;
       const x = halfW > W - halfW ? W / 2 : Phaser.Math.Clamp(dragX, halfW, W - halfW);
       const y = halfH > H - halfH ? H / 2 : Phaser.Math.Clamp(dragY, halfH, H - halfH);
       c.setPosition(x, y);
@@ -295,8 +315,10 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
     const b = bubble.getBounds();
     const halfH = b.height / 2;
     const halfW = b.width / 2;
-    // Keep the bubble above the keyboard (which now sits above the dim) as well as the edges.
-    const floor = Math.min(H - MARGIN, this.bottomLimit) - halfH;
+    // Keep the bubble above the keyboard (which now sits above the dim), the URL-bar strip
+    // (bottomSafeInset), and the edges.
+    const safeH = H - bottomSafeInset();
+    const floor = Math.min(safeH - MARGIN, this.bottomLimit) - halfH;
     const ceil = MARGIN + halfH;
     let cx: number;
     let cy: number;
@@ -311,7 +333,7 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
       cy = this.placement === 'top' ? ceil + inset : floor - inset;
     } else if (!target) {
       cx = W / 2;
-      cy = H / 2;
+      cy = safeH / 2;
     } else {
       // Track the target horizontally (clamped on-screen), so the bubble visibly moves to
       // whatever it is describing — while still fitting a narrow phone.

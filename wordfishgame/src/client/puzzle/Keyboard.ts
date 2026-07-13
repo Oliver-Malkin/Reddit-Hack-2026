@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { PALETTE, UI_FONT, cssColor } from '../theme';
+import { bottomSafeInset } from '../viewport';
 
 const ROWS = ['QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM'];
 const GAP = 6;
@@ -16,28 +17,6 @@ const PRESS_DY = 3;
 // cropped; the panel is drawn at (0,0) in panel space and this pad sits outside it.
 const TEX_PAD = 6;
 
-/**
- * Extra clearance above the canvas bottom for webviews that extend behind browser chrome.
- * Reddit's mobile-web expanded webview is sized with the LARGE viewport (100vh of the host
- * page), so its bottom ~60px sits behind the browser's retractable URL bar — and that clip
- * is invisible from inside the iframe (100dvh here just measures the iframe itself). Pinning
- * the keys flush to the canvas bottom put the whole Z row under the bar. Heuristic: embedded
- * in an iframe AND a touch device → lift everything bottom-anchored clear. Desktop reddit
- * (mouse), the native app-style direct webview and the local vite preview all get 0.
- */
-function bottomSafeInset(): number {
-  let embedded: boolean;
-  try {
-    embedded = window.self !== window.top;
-  } catch {
-    embedded = true; // cross-origin parent blocked the check — definitely an iframe
-  }
-  const touch =
-    typeof window.matchMedia === 'function'
-      ? window.matchMedia('(pointer: coarse)').matches
-      : 'ontouchstart' in window;
-  return embedded && touch ? 64 : 0;
-}
 // Supersample the baked panel so it stays crisp on high-DPI (retina / phone) screens.
 const TEX_RES = 2;
 

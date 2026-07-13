@@ -40,6 +40,13 @@ const SHADOW_GAP_OFFSET = 26; // extra throw per unit of height gap
 const SHADOW_ALPHA = 0.16;
 const SHADOW_HEIGHT_EPS = 0.02; // ignore casters barely taller than their receiver
 
+// Decor is faded in/out (not popped) whenever it spawns/despawns — on a resize top-up/trim or
+// a new spawn. The fade is reversible: shrinking then growing again revives the still-fading
+// pieces instead of removing them and making new ones, so a quick wobble "goes back on itself".
+const SQUIGGLE_ALPHA = 0.85; // a squiggle's resting opacity
+const ECHO_ALPHA = 0.45; // a shape's displaced echo-outline opacity
+const FADE_MS = 260; // fairly quick, but visibly gradual
+
 type ShapeType = 'rect' | 'triangle' | 'circle' | 'diamond' | 'pill' | 'semi';
 type FillMode = 'solid' | 'outline' | 'patternDots' | 'patternStripes';
 type BorderWeight = 'thick' | 'thin' | 'none';
@@ -60,6 +67,10 @@ type ShapeRecipe = {
 type Squiggle = {
   obj: Phaser.GameObjects.Image;
   speed: number;
+  // Set while the mark is fading out toward removal; excluded from the live count and eligible
+  // to be revived (faded back in) if a grow needs a mark again before it finishes fading.
+  retiring: boolean;
+  fadeTween: Phaser.Tweens.Tween | null;
 };
 
 type FloatingShape = {
@@ -76,6 +87,12 @@ type FloatingShape = {
   speed: number;
   rotSpeed: number;
   poolIndex: number;
+  // Fade multiplier (0..1) applied to the whole shape (body + shadow + echo + received
+  // shadow) every frame, so a spawn/despawn glides in/out instead of popping. See the
+  // Squiggle comment for the retiring/revive lifecycle.
+  fade: number;
+  retiring: boolean;
+  fadeTween: Phaser.Tweens.Tween | null;
 };
 
 function mulberry32(seed: number) {
@@ -116,6 +133,11 @@ export class BackgroundScene extends Phaser.Scene {
   // distance (see panParallaxTo) — otherwise, once the camera is offset for a page, the
   // respawn band sits inside the visible area and shapes visibly pop in at the edge.
   private readonly WRAP_MARGIN = 340;
+  // Squiggles wrap over a much tighter vertical band than the shapes (the camera only pans on
+  // X, so the bottom re-entry is always off-screen). This is that band's half-height — used
+  // everywhere squiggles are placed so they populate the full wrap band, not just the visible
+  // field (see scatterSquiggles / squiggleTargetCount).
+  private readonly SQUIGGLE_Y_MARGIN = 30;
   // The grid tilesprite extends this far past each edge so the parallax camera pan never
   // uncovers a bare strip of off-white.
   private readonly GRID_OVERSCAN = 520;
@@ -345,38 +367,117 @@ export class BackgroundScene extends Phaser.Scene {
     c.stroke();
   }
 
-  private scatterSquiggles() {
-    const motifs = ['zigzag', 'ring', 'dots', 'spark', 'plus', 'slash', 'dot', 'wave'];
-    const targetCount = 32;
+  /**
+   * How many small marks the current field should hold. Counted over the EXTENDED band (visible
+   * field + wrap margins) where the marks actually live, not just the visible field — so the
+   * *visible* density stays ~1 mark per 24k px² (matching the old 32 at 1024×768) while the
+   * off-screen margins are populated at the same density too. Keeping the margins full is what
+   * stops a horizontal resize from dragging a bare, never-populated margin into view as an
+   * empty vertical band, and a grown window from thinning out into a void.
+   */
+  private squiggleTargetCount(): number {
+    const extW = this.fieldWidth + this.WRAP_MARGIN * 2;
+    const extH = this.fieldHeight + this.SQUIGGLE_Y_MARGIN * 2;
+    // ~1 mark per 38k px² of the extended band — an airy speckle. Raise this divisor to thin
+    // it further, lower it to make the field busier.
+    return Math.max(8, Math.round((extW * extH) / 38_000));
+  }
 
-    const cols = Math.ceil(Math.sqrt((targetCount * this.fieldWidth) / this.fieldHeight));
+  private scatterSquiggles() {
+    const mx = this.WRAP_MARGIN;
+    const my = this.SQUIGGLE_Y_MARGIN;
+    const extW = this.fieldWidth + mx * 2;
+    const extH = this.fieldHeight + my * 2;
+    const targetCount = this.squiggleTargetCount();
+
+    // Stratify across the extended band (not just the visible field) so the wrap margins are
+    // seeded from frame one — otherwise they only fill in slowly via drift, and a resize that
+    // pulls a margin into view exposes it as a bare band.
+    const cols = Math.ceil(Math.sqrt((targetCount * extW) / extH));
     const rows = Math.ceil(targetCount / cols);
-    const cellW = this.fieldWidth / cols;
-    const cellH = this.fieldHeight / rows;
+    const cellW = extW / cols;
+    const cellH = extH / rows;
 
     let placed = 0;
     for (let row = 0; row < rows && placed < targetCount; row++) {
       for (let col = 0; col < cols && placed < targetCount; col++) {
         if (this.rng() < 0.15) continue;
 
-        const x = col * cellW + this.rngFloat(0.2, 0.8) * cellW;
-        const y = row * cellH + this.rngFloat(0.2, 0.8) * cellH;
-
-        const motif = this.rngPick(motifs);
-        const color = this.rngPick(SQUIGGLE_COLORS);
-        const frame = `${motif}-${color}`;
-
-        const img = this.add
-          .image(x, y, 'sq-atlas', frame)
-          .setRotation(this.rngFloat(0, Math.PI * 2))
-          .setScale(this.rngFloat(0.9, 1.3))
-          .setAlpha(0.85)
-          .setDepth(1);
-
-        this.squiggles.push({ obj: img, speed: this.rngFloat(0.03, 0.038) });
+        const x = -mx + col * cellW + this.rngFloat(0.2, 0.8) * cellW;
+        const y = -my + row * cellH + this.rngFloat(0.2, 0.8) * cellH;
+        this.spawnSquiggle(x, y);
         placed++;
       }
     }
+  }
+
+  /** Add one drifting squiggle at (x, y) with a random motif, colour, spin and scale. When
+   *  `fadeIn` it eases up from transparent (used for resize top-ups); the initial scatter
+   *  passes false so the field is simply there on load. */
+  private spawnSquiggle(x: number, y: number, fadeIn = false) {
+    const motifs = ['zigzag', 'ring', 'dots', 'spark', 'plus', 'slash', 'dot', 'wave'];
+    const motif = this.rngPick(motifs);
+    const color = this.rngPick(SQUIGGLE_COLORS);
+    const frame = `${motif}-${color}`;
+
+    const img = this.add
+      .image(x, y, 'sq-atlas', frame)
+      .setRotation(this.rngFloat(0, Math.PI * 2))
+      .setScale(this.rngFloat(0.9, 1.3))
+      .setAlpha(fadeIn ? 0 : SQUIGGLE_ALPHA)
+      .setDepth(1)
+      .setVisible(!this.decorHidden);
+
+    const s: Squiggle = { obj: img, speed: this.rngFloat(0.03, 0.038), retiring: false, fadeTween: null };
+    this.squiggles.push(s);
+    if (fadeIn) this.fadeInSquiggle(s);
+  }
+
+  // ---------- DECOR FADE LIFECYCLE ----------
+
+  /** Live (non-retiring) squiggle count — what the density target is measured against. */
+  private liveSquiggleCount(): number {
+    let n = 0;
+    for (const s of this.squiggles) if (!s.retiring) n++;
+    return n;
+  }
+
+  /** A random squiggle that isn't already fading out, or null if none. */
+  private randomLiveSquiggle(): Squiggle | null {
+    const live = this.squiggles.filter((s) => !s.retiring);
+    return live.length ? live[Math.floor(this.rng() * live.length)]! : null;
+  }
+
+  /** Fade a squiggle up to its resting opacity (also cancels an in-flight fade-out — the
+   *  "revive" that lets a shrink→grow wobble reverse instead of churning marks). */
+  private fadeInSquiggle(s: Squiggle) {
+    s.retiring = false;
+    s.fadeTween?.stop();
+    s.fadeTween = this.tweens.add({
+      targets: s.obj,
+      alpha: SQUIGGLE_ALPHA,
+      duration: FADE_MS,
+      ease: 'Sine.easeOut',
+    });
+  }
+
+  /** Fade a squiggle out, then remove it once transparent. No-op if already retiring. */
+  private retireSquiggle(s: Squiggle) {
+    if (s.retiring) return;
+    s.retiring = true;
+    s.fadeTween?.stop();
+    s.fadeTween = this.tweens.add({
+      targets: s.obj,
+      alpha: 0,
+      duration: FADE_MS,
+      ease: 'Sine.easeIn',
+      onComplete: () => {
+        if (!s.retiring) return; // revived mid-fade — keep it
+        const i = this.squiggles.indexOf(s);
+        if (i >= 0) this.squiggles.splice(i, 1);
+        s.obj.destroy();
+      },
+    });
   }
 
   // ---------- SHAPE RECIPE POOL ----------
@@ -475,7 +576,7 @@ export class BackgroundScene extends Phaser.Scene {
     }
   }
 
-  private spawnShapeFromPool(poolIndex: number, x: number, y: number) {
+  private spawnShapeFromPool(poolIndex: number, x: number, y: number, fadeIn = false) {
     const idx = poolIndex % this.shapePool.length;
     const recipe = this.shapePool[idx]!;
     // Gentle drift — this sits behind word tiles the player is reading, so the
@@ -508,7 +609,7 @@ export class BackgroundScene extends Phaser.Scene {
       echo = this.add
         .image(x - 7, y - 5, this.ensureEchoTexture(idx))
         .setScale(1 / this.TEXTURE_RES)
-        .setAlpha(0.45)
+        .setAlpha(ECHO_ALPHA)
         .setDepth(bodyDepth - 0.25);
     }
 
@@ -522,7 +623,7 @@ export class BackgroundScene extends Phaser.Scene {
     const container = this.add.container(x, y, [body]);
     container.setDepth(bodyDepth);
 
-    this.shapes.push({
+    const shape: FloatingShape = {
       container,
       shadow,
       recv: null,
@@ -532,6 +633,69 @@ export class BackgroundScene extends Phaser.Scene {
       speed,
       rotSpeed: this.rngFloat(-0.0002, 0.0002),
       poolIndex: idx,
+      fade: fadeIn ? 0 : 1,
+      retiring: false,
+      fadeTween: null,
+    };
+    this.shapes.push(shape);
+    this.applyShapeFade(shape); // stamp the initial opacity (0 when fading in)
+    if (fadeIn) this.fadeInShape(shape);
+  }
+
+  // ---------- SHAPE FADE LIFECYCLE (mirrors the squiggle one) ----------
+
+  /** Push a shape's fade multiplier onto all of its parts. Called every frame from update()
+   *  (the fade tween drives shape.fade; this reflects it), and once at spawn. */
+  private applyShapeFade(shape: FloatingShape) {
+    const a = shape.fade;
+    shape.container.setAlpha(a);
+    shape.shadow.setAlpha(SHADOW_ALPHA * a);
+    shape.echo?.setAlpha(ECHO_ALPHA * a);
+    shape.recv?.setAlpha(SHADOW_ALPHA * a);
+  }
+
+  private liveShapeCount(): number {
+    let n = 0;
+    for (const s of this.shapes) if (!s.retiring) n++;
+    return n;
+  }
+
+  private randomLiveShape(): FloatingShape | null {
+    const live = this.shapes.filter((s) => !s.retiring);
+    return live.length ? live[Math.floor(this.rng() * live.length)]! : null;
+  }
+
+  /** Fade a shape up to full (and cancel any in-flight fade-out — the revive). */
+  private fadeInShape(shape: FloatingShape) {
+    shape.retiring = false;
+    shape.fadeTween?.stop();
+    shape.fadeTween = this.tweens.add({
+      targets: shape,
+      fade: 1,
+      duration: FADE_MS,
+      ease: 'Sine.easeOut',
+    });
+  }
+
+  /** Fade a shape out, then tear it down once invisible. No-op if already retiring. */
+  private retireShape(shape: FloatingShape) {
+    if (shape.retiring) return;
+    shape.retiring = true;
+    shape.fadeTween?.stop();
+    shape.fadeTween = this.tweens.add({
+      targets: shape,
+      fade: 0,
+      duration: FADE_MS,
+      ease: 'Sine.easeIn',
+      onComplete: () => {
+        if (!shape.retiring) return; // revived mid-fade
+        const i = this.shapes.indexOf(shape);
+        if (i >= 0) this.shapes.splice(i, 1);
+        shape.container.destroy(true);
+        shape.shadow.destroy();
+        shape.echo?.destroy();
+        this.disposeRecvShadow(shape);
+      },
     });
   }
 
@@ -549,6 +713,7 @@ export class BackgroundScene extends Phaser.Scene {
     if (y < -m) y += this.fieldHeight + m * 2;
 
     const index = this.shapes.indexOf(shape);
+    shape.fadeTween?.stop(); // drop any in-flight fade so it can't mutate a torn-down shape
     shape.container.destroy(true);
     shape.shadow.destroy();
     shape.echo?.destroy();
@@ -804,6 +969,36 @@ export class BackgroundScene extends Phaser.Scene {
       s.obj.y = (s.obj.y + 30) * sqY - 30;
     }
 
+    // Scaling alone keeps the OLD count, so a grown field just spreads the same marks thinner
+    // and leaves a sparse void; top up (or trim) to the new area's density like the shapes do.
+    // Trim by fading out RANDOM live marks, not the array tail: the array is ordered
+    // top-to-bottom from the initial row-major scatter, so removing the end always deleted the
+    // lowest marks — a big instant shrink collapsed the even spread into a cluster. Random
+    // removal keeps it uniform; the fade (and revive on grow) is handled by retire/fadeIn.
+    const wantSq = this.squiggleTargetCount();
+    let liveSq = this.liveSquiggleCount();
+    while (liveSq > wantSq) {
+      const s = this.randomLiveSquiggle();
+      if (!s) break;
+      this.retireSquiggle(s);
+      liveSq--;
+    }
+    while (liveSq < wantSq) {
+      // Revive a still-fading-out mark first, so a shrink-then-grow reverses instead of
+      // churning; only spawn a genuinely new one (fading in) when none are left to revive.
+      const reviving = this.squiggles.find((s) => s.retiring);
+      if (reviving) {
+        this.fadeInSquiggle(reviving);
+      } else {
+        this.spawnSquiggle(
+          this.rngFloat(-this.WRAP_MARGIN, this.fieldWidth + this.WRAP_MARGIN),
+          this.rngFloat(-this.SQUIGGLE_Y_MARGIN, this.fieldHeight + this.SQUIGGLE_Y_MARGIN),
+          true
+        );
+      }
+      liveSq++;
+    }
+
     const fx = (this.fieldWidth + m * 2) / (oldW + m * 2);
     const fy = (this.fieldHeight + m * 2) / (oldH + m * 2);
     for (const shape of this.shapes) {
@@ -819,25 +1014,33 @@ export class BackgroundScene extends Phaser.Scene {
       shape.container.setPosition(nx, ny);
     }
 
-    // Keep the ~1 shape per 290k px² density (matches spawnFloatingShapes).
+    // Keep the ~1 shape per 290k px² density (matches spawnFloatingShapes). Fade out random
+    // live shapes on shrink and revive/fade in on grow — same lifecycle as the squiggles.
     const extW = this.fieldWidth + m * 2;
     const extH = this.fieldHeight + m * 2;
     const want = Math.max(8, Math.round((extW * extH) / 290_000));
-    while (this.shapes.length > want) {
-      const shape = this.shapes.pop()!;
-      shape.container.destroy(true);
-      shape.shadow.destroy();
-      shape.echo?.destroy();
-      this.disposeRecvShadow(shape);
+    let liveSh = this.liveShapeCount();
+    while (liveSh > want) {
+      const sh = this.randomLiveShape();
+      if (!sh) break;
+      this.retireShape(sh);
+      liveSh--;
     }
     let cursor = Math.floor(this.rng() * this.shapePool.length);
-    while (this.shapes.length < want) {
-      this.spawnShapeFromPool(
-        this.nextFreePoolIndex(cursor),
-        -m + this.rng() * extW,
-        -m + this.rng() * extH
-      );
-      cursor = this.shapes[this.shapes.length - 1]!.poolIndex;
+    while (liveSh < want) {
+      const reviving = this.shapes.find((s) => s.retiring);
+      if (reviving) {
+        this.fadeInShape(reviving);
+      } else {
+        this.spawnShapeFromPool(
+          this.nextFreePoolIndex(cursor),
+          -m + this.rng() * extW,
+          -m + this.rng() * extH,
+          true
+        );
+        cursor = this.shapes[this.shapes.length - 1]!.poolIndex;
+      }
+      liveSh++;
     }
 
     // Newly spawned pieces default to visible — re-assert clean mode if it's on.
@@ -904,7 +1107,15 @@ export class BackgroundScene extends Phaser.Scene {
           shape.echo.rotation = shape.container.rotation;
         }
 
-        if (shape.container.x < -this.WRAP_MARGIN || shape.container.y < -this.WRAP_MARGIN) {
+        // Reflect the fade tween (spawn/despawn glide) onto every part each frame.
+        this.applyShapeFade(shape);
+
+        // A retiring shape is fading out in place; don't torus-wrap it (that would teleport a
+        // half-faded shape across the field). Live shapes wrap as before.
+        if (
+          !shape.retiring &&
+          (shape.container.x < -this.WRAP_MARGIN || shape.container.y < -this.WRAP_MARGIN)
+        ) {
           this.respawnShape(shape);
         }
       }
@@ -1009,6 +1220,7 @@ export class BackgroundScene extends Phaser.Scene {
     receiver
       .recv!.setPosition(receiver.container.x, receiver.container.y)
       .setRotation(receiver.container.rotation)
+      .setAlpha(SHADOW_ALPHA * receiver.fade) // honour the shape's fade
       .setVisible(!this.decorHidden);
   }
 

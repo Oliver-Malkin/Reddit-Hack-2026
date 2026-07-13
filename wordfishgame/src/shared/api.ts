@@ -14,6 +14,10 @@ export type InitResponse = {
   puzzleAuthor?: string;
   /** Full reddit.com URL of this post (custom puzzles only), for the share button. */
   postUrl?: string;
+  /** For a daily post: the UTC day it was frozen to (see shared/daily). The client selects
+   *  that day's easy/hard boards and dates the menu label from it, so historical daily posts
+   *  keep their own puzzle. Absent on custom-puzzle posts and untracked/legacy posts. */
+  dailyDay?: number;
 };
 
 export type IncrementResponse = {

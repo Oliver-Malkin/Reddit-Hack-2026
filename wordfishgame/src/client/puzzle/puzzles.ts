@@ -1,5 +1,6 @@
 import type { Difficulty, Puzzle } from './types';
 import { easyPuzzles, hardPuzzles } from './puzzleBank';
+import { utcDayNumber } from '../../shared/daily';
 
 /** DOG ⊃ (HUSKY) = RASPY — the hidden middle word links both clues. */
 export const dogPuzzle: Puzzle = {
@@ -90,18 +91,18 @@ export const grievePuzzle: Puzzle = {
   ],
 };
 
-/** UTC day number — everyone worldwide flips to the next puzzle at the same moment. */
-const dayNumber = () => Math.floor(Date.now() / 86_400_000);
-
 /**
- * Today's puzzle for a given difficulty, drawn from the generated bank
+ * The puzzle for a given difficulty on a given day, drawn from the generated bank
  * (see scripts/puzzlegen). The bank is pre-shuffled, so stepping through it by day
  * gives varied puzzles with no repeats until the whole bank has been played.
  * Falls back to the handcrafted puzzles if a bank is ever empty.
+ *
+ * `day` defaults to the live UTC day, but a daily post passes its FROZEN day (from
+ * /api/init — see shared/daily) so a historical daily always shows its own board.
  */
-export function puzzleForDifficulty(difficulty: Difficulty): Puzzle {
+export function puzzleForDifficulty(difficulty: Difficulty, day: number = utcDayNumber()): Puzzle {
   const bank = difficulty === 'hard' ? hardPuzzles : easyPuzzles;
-  const daily = bank[dayNumber() % Math.max(bank.length, 1)];
+  const daily = bank[((day % bank.length) + bank.length) % Math.max(bank.length, 1)];
   return daily ?? (difficulty === 'hard' ? grievePuzzle : applePuzzle);
 }
 

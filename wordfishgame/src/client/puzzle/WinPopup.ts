@@ -1,5 +1,6 @@
 import * as Phaser from 'phaser';
 import { PALETTE, UI_FONT } from '../theme';
+import { bottomSafeInset } from '../viewport';
 
 const PANEL_W = 340;
 // Fits a single-line subtitle ("The word was APPLE"); grows downward when the subtitle
@@ -222,7 +223,8 @@ export class WinPopup extends Phaser.GameObjects.Container {
    *  panel, it pins to centre on that axis rather than jamming against one edge. */
   private clampToScreen(x: number, y: number): { x: number; y: number } {
     const W = this.scene.scale.width;
-    const H = this.scene.scale.height;
+    // Treat the screen as ending above the URL-bar strip so the card can't be nudged under it.
+    const H = this.scene.scale.height - bottomSafeInset();
     const halfW = PANEL_W / 2;
     const halfH = this.panelH / 2;
     return {

@@ -10,6 +10,7 @@ import { SoundFx } from '../puzzle/SoundFx';
 import { TutorialCoach } from '../puzzle/TutorialCoach';
 import type { CoachStep } from '../puzzle/TutorialCoach';
 import { scatterHomes } from '../puzzle/scatter';
+import { bottomSafeInset } from '../viewport';
 import { PALETTE } from '../theme';
 import { slideCameraIn, transitionToPage, isTransitioning, SLIDE_DURATION } from './pageTransition';
 import type { PageEnterData } from './pageTransition';
@@ -165,7 +166,9 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
     if (this.tileList.length === 0) return;
     const W = this.scale.width;
     const H = this.scale.height;
-    const reserved = this.keyboard?.reservedHeight() ?? 0;
+    // Reserve the keyboard's footprint AND the bottom URL-bar strip (see bottomSafeInset), so
+    // no tile's home slot — or a dragged tile — lands off-screen behind the bar.
+    const reserved = Math.max(this.keyboard?.reservedHeight() ?? 0, bottomSafeInset());
     const playBottom = (this.playBottom = Math.max(H - reserved, H * 0.45));
 
     const widest = Math.max(...this.tileList.map((t) => t.boxWidth));
@@ -538,6 +541,12 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
   }
 
   endTileDrag(_tile: WordTile) {}
+
+  /** Drag bounds: keep a dragged tile fully on canvas and above the keyboard / URL-bar strip
+   *  (same clamps the layout uses), so it can't be lost off an edge. Mirrors PuzzleScene. */
+  clampTilePosition(tile: WordTile, x: number, y: number): { x: number; y: number } {
+    return { x: this.clampX(tile, x), y: this.clampY(tile, y, this.playBottom) };
+  }
 
   playFx(name: TileFxName) {
     this.sfx[name]();

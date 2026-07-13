@@ -7,8 +7,9 @@ import { buildTitle, pickTitleStyle } from '../puzzle/titleStyles';
 import type { TitleStyle } from '../puzzle/titleStyles';
 import type { Difficulty, Puzzle } from '../puzzle/types';
 import { openPuzzleEditor, showPuzzleEditor } from '../puzzle/editor/PuzzleEditor';
-import { getBootPuzzle } from '../puzzle/remote';
+import { getBootPuzzle, getBootDailyDay } from '../puzzle/remote';
 import type { CustomPuzzle } from '../puzzle/remote';
+import { utcDayLabel } from '../../shared/daily';
 import type { BackgroundScene } from './BackgroundScene';
 import { slideCameraIn, transitionToPage, jumpToPage, isTransitioning } from './pageTransition';
 import type { PageEnterData } from './pageTransition';
@@ -375,8 +376,12 @@ export class MenuScene extends Phaser.Scene {
     transitionToPage(this, key, data, 'left', bg.parallaxOffset());
   }
 
-  /** e.g. "THURSDAY 9 JULY" — reinforces that each button is a fresh daily level. */
+  /** e.g. "THURSDAY 9 JULY" — reinforces that each button is a fresh daily level. On a daily
+   *  post this is the post's FROZEN day (so it names the puzzle actually on offer, and matches
+   *  a historical post rather than always saying today); local preview falls back to now. */
   private todayLabel(): string {
+    const day = getBootDailyDay();
+    if (day != null) return utcDayLabel(day);
     try {
       return new Date()
         .toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })

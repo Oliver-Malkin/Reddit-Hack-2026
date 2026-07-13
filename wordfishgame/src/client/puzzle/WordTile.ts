@@ -1,7 +1,10 @@
 import Phaser from 'phaser';
 import { PALETTE, UI_FONT } from '../theme';
+import { bottomSafeInset } from '../viewport';
 
-const CELL_W = 46;
+/** One letter cell's width. Exported so the scene can size tiles to fit a target number of
+ *  cells across the canvas (see PuzzleScene.recomputeLayoutMetrics). */
+export const CELL_W = 46;
 const CELL_H = 58;
 const RADIUS = 10;
 const BORDER = 5;
@@ -231,7 +234,7 @@ export class WordTile extends Phaser.GameObjects.Container {
   private clampToCanvas(x: number, y: number): { x: number; y: number } {
     const m = 8;
     const W = this.scene.scale.width;
-    const H = this.scene.scale.height;
+    const H = this.scene.scale.height - bottomSafeInset(); // keep clear of the URL-bar strip
     const halfW = (this.boxWidth / 2) * this.baseScale + m;
     const halfH = (this.boxHeight / 2) * this.baseScale + m;
     return {

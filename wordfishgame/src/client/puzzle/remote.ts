@@ -8,12 +8,24 @@ import type { InitResponse, PublishPuzzleResponse } from '../../shared/api';
 /** A custom puzzle attached to the current post, if this post is a user-created one. */
 export type CustomPuzzle = { puzzle: Puzzle; title: string; author: string; url: string };
 
-/** Fetch /api/init. Returns the custom puzzle for this post, or null (daily / offline). */
+// The UTC day this (daily) post was frozen to, captured from /api/init at boot. Null on a
+// custom-puzzle post, an untracked/legacy daily, or offline — the client then falls back to
+// the live UTC day (see puzzles.puzzleForDifficulty).
+let bootDailyDay: number | null = null;
+
+/** The frozen UTC day for this daily post, or null. Valid after boot (see primeBootPuzzle). */
+export function getBootDailyDay(): number | null {
+  return bootDailyDay;
+}
+
+/** Fetch /api/init. Returns the custom puzzle for this post, or null (daily / offline), and as
+ *  a side effect records the daily-day freeze (read via getBootDailyDay). */
 export async function fetchCustomPuzzle(): Promise<CustomPuzzle | null> {
   try {
     const res = await fetch('/api/init');
     if (!res.ok) return null;
     const data = (await res.json()) as Partial<InitResponse>;
+    if (typeof data?.dailyDay === 'number') bootDailyDay = data.dailyDay;
     if (data && data.puzzle) {
       return {
         puzzle: data.puzzle,
