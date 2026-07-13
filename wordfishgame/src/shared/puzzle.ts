@@ -17,11 +17,11 @@ export type LinkType =
  *  ("FISH · letters hide in · FOOLISH"); `hint` is the full explanation (tooltip text).
  *  Order is the order shown to creators. */
 export const LINK_TYPES: readonly { type: LinkType; label: string; hint: string }[] = [
-  { type: 'synonym', label: 'means same as', hint: 'Synonym — FAST means the same as QUICK' },
-  { type: 'antonym', label: 'means opposite of', hint: 'Antonym — UP means the opposite of DOWN' },
+  { type: 'synonym', label: 'same as', hint: 'Synonym — FAST means the same as QUICK' },
+  { type: 'antonym', label: 'opposite of', hint: 'Antonym — UP means the opposite of DOWN' },
   { type: 'anagram', label: 'anagram of', hint: 'Anagram — EARTH is HEART with its letters rearranged' },
   { type: 'rhyme', label: 'rhymes with', hint: 'Rhyme — MOON sounds like SPOON' },
-  { type: 'hypernym', label: 'category of', hint: 'Category — DOG is the broader category containing HUSKY' },
+  { type: 'hypernym', label: 'includes', hint: 'Category — DOG includes HUSKY (a husky is a kind of dog)' },
   { type: 'meronym', label: 'part of', hint: 'Part — a WHEEL is part of a CAR' },
   { type: 'lettersubset', label: 'letters hide in', hint: 'Hidden letters — C, A, T sit in order inside SCATTER' },
   { type: 'sequence', label: 'becomes', hint: 'Becomes — an ACORN becomes an OAK over time' },

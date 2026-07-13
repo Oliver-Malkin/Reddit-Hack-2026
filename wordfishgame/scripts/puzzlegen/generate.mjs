@@ -56,11 +56,11 @@ const SEQ_WORD_RANK = 4000; // rank assigned to curated sequence words missing f
 const LINK_TYPE_LIST = ['synonym', 'antonym', 'hypernym', 'anagram', 'meronym', 'lettersubset', 'sequence', 'rhyme'];
 const MEANING = new Set(['synonym', 'antonym', 'hypernym', 'meronym', 'sequence']);
 const LABELS = {
-  synonym: 'means same as',
-  antonym: 'means opposite of',
+  synonym: 'same as',
+  antonym: 'opposite of',
   anagram: 'anagram of',
   rhyme: 'rhymes with',
-  hypernym: 'category of',
+  hypernym: 'includes',
   meronym: 'part of',
   lettersubset: 'letters hide in',
   sequence: 'becomes',

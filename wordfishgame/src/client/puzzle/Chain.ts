@@ -57,7 +57,7 @@ const CHIP_LABEL: Record<LinkType, string> = {
   synonym: 'SYNONYM',
   antonym: 'ANTONYM',
   // The ▸ matches the other directional labels: it flags that the link HAS a direction,
-  // not which way it points (the tiles are draggable, so the chevron shapes carry the
+  // not which way it points (the tiles are draggable, so the brace shapes carry the
   // actual heading). Without it, "IS A" was the only directional type reading as neutral.
   hypernym: 'IS A ▸',
   anagram: 'ANAGRAM',
@@ -85,7 +85,7 @@ const UPRIGHT = new Set<LinkType>(['synonym', 'antonym']);
  *
  * - synonym      "=" coins (white)          — equality; upright.
  * - antonym      "≠" coins (ink, inverse of synonym) — opposition; upright.
- * - hypernym     chevrons (yellow)          — category-of; apex → the narrower word.
+ * - hypernym     braces (yellow)            — category-of; mouth opens to the broad word, nub → the narrow one.
  * - anagram      "⟳" mix coins (cyan)       — letters stirred; the glyph itself spins.
  * - meronym      nested squares (purple)    — a part inside a whole; slow turn.
  * - lettersubset arrow-into-bracket (navy)  — letters fly INTO the containing word.
@@ -419,7 +419,7 @@ export class Chain {
       case 'antonym':
         return ['chain-neq'];
       case 'hypernym':
-        return ['chain-chevron-ink', 'chain-chevron-yellow'];
+        return ['chain-brace-ink', 'chain-brace-yellow'];
       case 'anagram':
         return ['chain-mix'];
       case 'meronym':
@@ -619,32 +619,42 @@ export class Chain {
       ctx.stroke();
     });
 
-    // Hypernym — "<"/">" (apex → the hyponym, mouth open toward the hypernym it's read as
-    // containing — the inequality-symbol mnemonic). Opened wider than a typical arrowhead
-    // chevron so a row of these reads as repeated size comparisons rather than a stream of
-    // forward-arrows. Yellow variant outlined.
-    const chevron = (color: string | null) => (ctx: CanvasRenderingContext2D) => {
+    // Hypernym — a curly brace "}": its open mouth faces the broad category, narrowing to a
+    // nub at the specific member. Wide end = the bigger set (the "superset is the larger
+    // side" cue a ">" carries, softened into a grouping brace). Heading-locked with local +x
+    // toward the hyponym, so the nub noses at the narrower word and the mouth opens back
+    // toward the broader category (mouth → DOG, nub → HUSKY). Yellow variant outlined.
+    const brace = (color: string | null) => (ctx: CanvasRenderingContext2D) => {
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
+      const H = 9.5; // half-height (tip to tip)
+      const sx = -1.5; // spine x — the near-straight runs above/below the nub
+      const nub = 5; // nub tip x (points toward the narrow member, +x = the hyponym)
+      const tip = -5.5; // top/bottom tips (curl toward the broad category)
+      const curl = 3.2; // vertical length of each tip's curl
       const path = () => {
         ctx.beginPath();
-        ctx.moveTo(-4.5, -9.5);
-        ctx.lineTo(6, 0);
-        ctx.lineTo(-4.5, 9.5);
+        ctx.moveTo(tip, -H);
+        ctx.quadraticCurveTo(sx, -H, sx, -H + curl);
+        ctx.lineTo(sx, -curl);
+        ctx.quadraticCurveTo(sx, 0, nub, 0);
+        ctx.quadraticCurveTo(sx, 0, sx, curl);
+        ctx.lineTo(sx, H - curl);
+        ctx.quadraticCurveTo(sx, H, tip, H);
       };
       path();
-      ctx.lineWidth = color ? 8 : 5.5;
+      ctx.lineWidth = color ? 6 : 4;
       ctx.strokeStyle = ink;
       ctx.stroke();
       if (color) {
         path();
-        ctx.lineWidth = 4.5;
+        ctx.lineWidth = 3;
         ctx.strokeStyle = color;
         ctx.stroke();
       }
     };
-    bake('chain-chevron-ink', 26, chevron(null));
-    bake('chain-chevron-yellow', 26, chevron('#f5b727'));
+    bake('chain-brace-ink', 26, brace(null));
+    bake('chain-brace-yellow', 26, brace('#f5b727'));
 
     // Anagram — cyan coin with a "⟳" mix glyph: two chasing arcs with arrowheads.
     // The chain spins these freely, so the rotation symbol literally rotates.
