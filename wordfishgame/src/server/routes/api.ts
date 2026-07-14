@@ -33,9 +33,14 @@ api.get('/init', async (c) => {
   }
 
   try {
-    const [count, username, stored, dailyDay] = await Promise.all([
+    // Only postId/puzzle/dailyDay are actually consumed by the client (splash + boot) — the
+    // count/username fields below are unused leftovers from the starter template. Skipping
+    // reddit.getCurrentUsername() (a real network round-trip) shaves meaningful latency off
+    // this call, which the client races against a short timeout (see primeBootPuzzle /
+    // splash.ts's resolveCustom) — a slow /api/init used to lose that race and silently fall
+    // back to the generic daily splash / menu.
+    const [count, stored, dailyDay] = await Promise.all([
       redis.get('count'),
-      reddit.getCurrentUsername(),
       loadPuzzle(postId),
       getDailyDay(postId),
     ]);
@@ -44,7 +49,7 @@ api.get('/init', async (c) => {
       type: 'init',
       postId: postId,
       count: count ? parseInt(count) : 0,
-      username: username ?? 'anonymous',
+      username: 'anonymous',
       // Only present for user-created puzzle posts; the daily post has nothing stored.
       ...(stored
         ? {

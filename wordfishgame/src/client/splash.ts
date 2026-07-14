@@ -1423,25 +1423,28 @@ async function resolveCustom(): Promise<CustomData | null> {
   } catch {
     /* no search params in some webviews */
   }
-  const timeout = new Promise<null>((res) => window.setTimeout(() => res(null), 1500));
-  const fetched = (async (): Promise<CustomData | null> => {
-    try {
-      const res = await fetch('/api/init');
-      if (!res.ok) return null;
-      const data = (await res.json()) as Partial<InitResponse>;
-      if (data && data.puzzle) {
-        return {
-          puzzle: data.puzzle,
-          title: data.puzzleTitle ?? 'A WordFish puzzle',
-          author: data.puzzleAuthor ?? 'someone',
-        };
-      }
-      return null;
-    } catch {
-      return null;
+  // Aborts (rather than racing a separate discarding timer) so a slow-but-alive server can't
+  // have its eventual, correct post-specific splash data thrown away underneath it — that used
+  // to silently fall back to the generic daily splash whenever /api/init took over 1500ms.
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 4000);
+  try {
+    const res = await fetch('/api/init', { signal: controller.signal });
+    if (!res.ok) return null;
+    const data = (await res.json()) as Partial<InitResponse>;
+    if (data && data.puzzle) {
+      return {
+        puzzle: data.puzzle,
+        title: data.puzzleTitle ?? 'A WordFish puzzle',
+        author: data.puzzleAuthor ?? 'someone',
+      };
     }
-  })();
-  return Promise.race([fetched, timeout]);
+    return null;
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1625,57 +1628,105 @@ function render(custom: CustomData | null, variantKnown: boolean) {
   }
 }
 
+/**
+ * The generic OG/link-preview card (see shareImage.ts server-side): a single static image
+ * reused for EVERY post, daily or community, so it can't show a date or per-post puzzle —
+ * unlike render(), which repaints live per post. Captured on demand via `?og=<seed>`
+ * (see scripts/captureShareImage — there is no such script yet, this is invoked manually
+ * from the browser while iterating on the look).
+ */
+function renderShareCard(seedOverride: number) {
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  const ctx = canvas.getContext('2d')!;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const rng = mulberry32(seedOverride);
+  const titleStyle = pick(rng, TITLE_STYLES);
+  const cx = W / 2;
+
+  const size = clamp(Math.round(W * 0.17), 48, 120);
+  const gap = size * 0.62 + 16;
+  const titleY = H / 2 - gap / 2;
+  const taglineY = H / 2 + gap / 2;
+  const dotsY = taglineY + 24;
+
+  paintBackground(ctx, W, H, rng, [
+    {
+      x: cx - W * 0.44,
+      y: titleY - size * 0.75,
+      w: W * 0.88,
+      h: dotsY + 16 - (titleY - size * 0.75),
+    },
+  ]);
+  drawTitle(ctx, cx, titleY, size, titleStyle);
+  drawText(ctx, 'A WORD PUZZLE GAME', cx, taglineY, clamp(Math.round(W * 0.032), 12, 17), '800', C.navy, 3);
+  drawAccentDots(ctx, cx, dotsY);
+
+  playBtn.style.visibility = 'hidden';
+  caption.style.visibility = 'hidden';
+}
+
 // ---------------------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------------------
 
-buildPlayButton('PLAY');
+const ogSeed = new URLSearchParams(window.location.search).get('og');
 
-playBtn.addEventListener('click', (e) => {
-  try {
-    requestExpandedMode(e, 'game');
-  } catch {
-    /* outside Devvit (local preview) — nothing to expand */
-  }
-});
+if (ogSeed !== null) {
+  renderShareCard(ogSeed ? hashString(ogSeed) : SEED);
+} else {
+  buildPlayButton('PLAY');
 
-let resolved: CustomData | null = null;
-let known = false;
-let painted = false;
+  playBtn.addEventListener('click', (e) => {
+    try {
+      requestExpandedMode(e, 'game');
+    } catch {
+      /* outside Devvit (local preview) — nothing to expand */
+    }
+  });
 
-// Hide the DOM button/caption immediately so there's no unstyled flash of a stray "PLAY"
-// at the top-left before the first paint runs (render() normally does this, but the first
-// paint is now delayed — see below).
-playBtn.style.visibility = 'hidden';
-caption.style.visibility = 'hidden';
+  let resolved: CustomData | null = null;
+  let known = false;
+  let painted = false;
 
-// Same-origin /api/init is usually fast, so give it a brief head start before falling back
-// to the bare-title placeholder: on a typical load this paints the real (daily or custom)
-// splash directly, with no intermediate flash. Only a genuinely slow fetch still shows the
-// placeholder first (previous behaviour), which then gets replaced once data arrives.
-const fallbackTimer = window.setTimeout(() => {
-  if (painted) return;
-  painted = true;
-  render(null, false);
-}, 220);
+  // Hide the DOM button/caption immediately so there's no unstyled flash of a stray "PLAY"
+  // at the top-left before the first paint runs (render() normally does this, but the first
+  // paint is now delayed — see below).
+  playBtn.style.visibility = 'hidden';
+  caption.style.visibility = 'hidden';
 
-void resolveCustom().then((custom) => {
-  window.clearTimeout(fallbackTimer);
-  painted = true;
-  resolved = custom;
-  known = true;
-  render(resolved, known);
-});
+  // Same-origin /api/init is usually fast, so give it a brief head start before falling back
+  // to the bare-title placeholder: on a typical load this paints the real (daily or custom)
+  // splash directly, with no intermediate flash. Only a genuinely slow fetch still shows the
+  // placeholder first (previous behaviour), which then gets replaced once data arrives.
+  const fallbackTimer = window.setTimeout(() => {
+    if (painted) return;
+    painted = true;
+    render(null, false);
+  }, 220);
 
-// Re-render on any viewport change. Both hooks are needed: some webviews never fire
-// window resize, and ResizeObserver covers those; the guard skips redundant repaints.
-let lastW = window.innerWidth;
-let lastH = window.innerHeight;
-function onViewportChange() {
-  if (window.innerWidth === lastW && window.innerHeight === lastH) return;
-  lastW = window.innerWidth;
-  lastH = window.innerHeight;
-  render(resolved, known);
+  void resolveCustom().then((custom) => {
+    window.clearTimeout(fallbackTimer);
+    painted = true;
+    resolved = custom;
+    known = true;
+    render(resolved, known);
+  });
+
+  // Re-render on any viewport change. Both hooks are needed: some webviews never fire
+  // window resize, and ResizeObserver covers those; the guard skips redundant repaints.
+  let lastW = window.innerWidth;
+  let lastH = window.innerHeight;
+  const onViewportChange = () => {
+    if (window.innerWidth === lastW && window.innerHeight === lastH) return;
+    lastW = window.innerWidth;
+    lastH = window.innerHeight;
+    render(resolved, known);
+  };
+  window.addEventListener('resize', onViewportChange);
+  new ResizeObserver(onViewportChange).observe(document.documentElement);
 }
-window.addEventListener('resize', onViewportChange);
-new ResizeObserver(onViewportChange).observe(document.documentElement);

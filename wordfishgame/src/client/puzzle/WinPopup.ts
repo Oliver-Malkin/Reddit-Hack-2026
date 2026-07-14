@@ -276,6 +276,14 @@ export class WinPopup extends Phaser.GameObjects.Container {
     });
   }
 
+  /** Re-clamp the card to the current screen bounds — call this on canvas resize so a card
+   *  left near an edge (or centred at a now-stale width/height) doesn't end up hanging off
+   *  the new viewport, with its hit area no longer matching what's visible. */
+  recenter() {
+    const { x, y } = this.clampToScreen(this.x, this.y);
+    this.setPosition(x, y);
+  }
+
   /** Keep the card's panel fully on-screen while it's dragged, so it can be nudged aside but
    *  never off the edge (matching the word tiles). If the canvas is narrower/shorter than the
    *  panel, it pins to centre on that axis rather than jamming against one edge. */

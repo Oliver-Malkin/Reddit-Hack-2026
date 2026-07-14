@@ -18,11 +18,17 @@ export function getBootDailyDay(): number | null {
   return bootDailyDay;
 }
 
-/** Fetch /api/init. Returns the custom puzzle for this post, or null (daily / offline), and as
- *  a side effect records the daily-day freeze (read via getBootDailyDay). */
-export async function fetchCustomPuzzle(): Promise<CustomPuzzle | null> {
+/** Fetch /api/init, aborting (and returning null) after `timeoutMs` rather than hanging
+ *  forever against a slow/absent server. Returns the custom puzzle for this post, or null
+ *  (daily / offline / timed out), and as a side effect records the daily-day freeze (read
+ *  via getBootDailyDay). Cancelling the actual request on timeout (rather than just racing
+ *  a separate timer and discarding whichever result arrives second) means a slow-but-alive
+ *  server can't have its eventual, correct answer silently thrown away underneath it. */
+export async function fetchCustomPuzzle(timeoutMs = 4000): Promise<CustomPuzzle | null> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch('/api/init');
+    const res = await fetch('/api/init', { signal: controller.signal });
     if (!res.ok) return null;
     const data = (await res.json()) as Partial<InitResponse>;
     if (typeof data?.dailyDay === 'number') bootDailyDay = data.dailyDay;
@@ -36,7 +42,9 @@ export async function fetchCustomPuzzle(): Promise<CustomPuzzle | null> {
     }
     return null;
   } catch {
-    return null; // no server (local preview) — just play the daily
+    return null; // no server (local preview), offline, or timed out — just play the daily
+  } finally {
+    window.clearTimeout(timer);
   }
 }
 
@@ -98,8 +106,7 @@ export async function primeBootPuzzle(): Promise<void> {
   } catch {
     /* no search params in some webviews — fall through to the fetch */
   }
-  const timeout = new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 1200));
-  bootPuzzle = await Promise.race([fetchCustomPuzzle(), timeout]);
+  bootPuzzle = await fetchCustomPuzzle();
 }
 
 export type PublishResult =

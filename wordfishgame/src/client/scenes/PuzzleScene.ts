@@ -102,6 +102,7 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     this.scale.on('resize', () => {
       this.keyboard?.layout();
       this.applyLayout();
+      this.winPopup?.recenter();
     });
 
     // Woken from the menu again — reload the chosen puzzle and slide back in.
@@ -358,7 +359,7 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
   }
 
   private get modalOpen(): boolean {
-    return this.help !== null;
+    return this.help !== null || this.winPopup !== null;
   }
 
   /**
