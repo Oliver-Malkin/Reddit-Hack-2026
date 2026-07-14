@@ -21,4 +21,4 @@ export function cssColor(color: number, alpha = 1): string {
 }
 
 /** Chunky UI font stack for tiles and chips — matches the blocky Memphis look. */
-export const UI_FONT = '"Arial Black", "Arial Bold", Arial, sans-serif';
+export const UI_FONT = '"Arial Black", "Arial Bold", Arial, "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';

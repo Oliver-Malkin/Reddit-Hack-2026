@@ -20,6 +20,11 @@ export type InitResponse = {
   dailyDay?: number;
 };
 
+export type UserStreak = {
+  type: "streak";
+  streak: string;
+}
+
 export type IncrementResponse = {
   type: "increment";
   postId: string;

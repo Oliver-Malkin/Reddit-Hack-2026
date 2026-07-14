@@ -59,6 +59,17 @@ export class WinPopup extends Phaser.GameObjects.Container {
     super(scene, x, y);
     this.once(Phaser.GameObjects.Events.DESTROY, () => (this.killed = true));
 
+    console.log("puzzle completed!")
+
+    void (async () => {
+      try {
+        const response = await fetch('/api/increment_streak', {method: 'POST'});
+        if (!response.ok) throw new Error(`API error: ${response.status}`);
+      } catch (error){
+        console.error("Failed to increment streak", error);
+      }
+    })();
+
     // Built and measured FIRST: a hard puzzle can reveal up to three hidden words at
     // once, and however many lines that wraps to determines how tall the card needs to
     // be. Every other element below is positioned off `this.panelH`, computed here.

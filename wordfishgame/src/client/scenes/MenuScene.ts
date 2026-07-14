@@ -13,6 +13,7 @@ import { utcDayLabel } from '../../shared/daily';
 import type { BackgroundScene } from './BackgroundScene';
 import { slideCameraIn, transitionToPage, jumpToPage, isTransitioning } from './pageTransition';
 import type { PageEnterData } from './pageTransition';
+import { UserStreak } from '../../shared/api';
 
 const MARGIN = 16;
 /** The three small accent dots under the tagline — a quiet Memphis divider. */
@@ -105,7 +106,7 @@ export class MenuScene extends Phaser.Scene {
     // extend past the plain cap-height, so a fixed titleSize/2 gap let the card cover it.
     const titleHalfH = (title.getData('halfHeight') as number) ?? titleSize / 2;
     let y = titleTop + titleHalfH + 12;
-
+    
     const tagline = this.text(cx, y, 'A DAILY WORD PUZZLE', Phaser.Math.Clamp(Math.round(W * 0.026), 12, 17), '800', '#2b2d6e');
     tagline.setLetterSpacing(3);
     y += tagline.height + 12;
@@ -116,6 +117,84 @@ export class MenuScene extends Phaser.Scene {
       dots.fillCircle(cx + (i - 1) * 18, y, 4);
     });
     this.root.add(dots);
+    y += 28; // space between dots and streak
+
+    // to-do
+    //const streakEmojis = ["🐟", "🐠", "🦐", "🐡", "🦀", "🦑", "🦞", "🐙", "🦈"];
+    // check if user has a streak and show number of days
+    //if(true) {
+      // actual streak value
+      
+    //} 
+    /*else if (false) {
+      // no streak yet :(
+    } else {
+      // log in to make a streak
+    }
+    */
+/*
+    private async getStreak(): Promise<string | null> {
+    try {
+      const response = await fetch('/api/fetch_streak');
+
+      if (!response.ok) {
+        return null // no streak found
+      }
+
+      const data = await response.json() as UserStreak;
+
+      const streak = data.streak
+
+      if (streak === "0") {
+        return null
+      }
+      return streak
+
+    } catch (error) {
+      console.error("Failed to fetch streak", error)
+      return null
+    }
+  }*/
+
+
+    let userStreak;
+    let streakText = "";
+    void (async () => {
+      try {
+        const response = await fetch('/api/fetch_streak');
+
+        if (!response.ok) {
+          userStreak = null // no streak found
+          return
+        }
+
+        const data = (await response.json()) as UserStreak;
+        const streak = data.streak
+
+        if (streak == "0") {
+          userStreak = null
+        }
+        userStreak = streak
+
+      } catch (error) {
+        console.error("Failed to fetch streak", error)
+        userStreak = null
+      }
+
+      if (userStreak === null) {
+        streakText = "YOU DONT HAVE A STREAK YET!"
+      } else {
+        streakText = `CURRENT STREAK ${userStreak} DAYS`
+      }
+    })();
+
+    //const userStreak = this.getStreak()
+    
+
+    
+    const streak = this.text(cx, y, streakText, Phaser.Math.Clamp(Math.round(W * 0.026), 12, 17), 'normal', '#f5b727');
+    streak.setLetterSpacing(3);
+    y += streak.height + 12;
 
     // ---- Lower group (daily header + difficulty + tutorial), vertically centred in the
     // space beneath the title so it stays balanced on tall and short canvases alike. ----
@@ -403,4 +482,6 @@ export class MenuScene extends Phaser.Scene {
     this.root.add(t);
     return t;
   }
+
+  
 }

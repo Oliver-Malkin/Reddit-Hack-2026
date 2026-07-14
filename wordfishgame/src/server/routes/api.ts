@@ -1,10 +1,9 @@
 import { Hono } from 'hono';
 import { context, redis, reddit } from '@devvit/web/server';
 import type {
-  DecrementResponse,
-  IncrementResponse,
   InitResponse,
   PublishPuzzleResponse,
+  UserStreak,
 } from '../../shared/api';
 import { createPuzzlePost } from '../core/post';
 import { cleanTitle, loadPuzzle, savePuzzle, validatePuzzle } from '../core/puzzleStore';
@@ -75,6 +74,99 @@ api.get('/init', async (c) => {
   }
 });
 
+/*
+
+post increment_streak - done
+
+check is there a user - done
+
+check the date user:username:streak_date & user:username:streak - done
+
+increment by 1 if today - done
+
+set todays date to today - done
+
+*/
+
+api.post('/increment_streak', async (c) => {
+  const user = context.userId;
+
+  if (!user) {
+    return c.json<ErrorResponse>(
+      {
+        status: "error",
+        message: "no user",
+      },
+      400
+    )
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const oneDay = 24 * 60 * 60 * 1000;
+  const rawDate = await redis.get(`user:${user}:streak_date`);
+  let streak = 1
+
+  if (rawDate) { // is there a date?
+    const userDate = new Date(rawDate);
+    const dateDiff = today.getTime() - userDate.getTime();
+    if (dateDiff === oneDay) {
+      streak = await redis.incrBy(`user:${user}:streak`, 1);
+      console.log("increment user streak");
+    } else {
+      await redis.set(`user:${user}:streak`, "1");
+      console.log("set user streak to 1");
+    }
+  } else { // no date, must start a streak
+    await redis.set(`user:${user}:streak`, "1");
+    console.log("no streak exists, set user streak to 1");
+  }
+
+  // set users date to todays date
+  await redis.set(`user:${user}:streak_date`, today.toISOString());
+
+  return c.json<UserStreak>({
+    type: "streak",
+    streak: streak.toString()
+  });
+
+})
+
+api.get('/fetch_streak', async (c) => {
+  const user = context.userId;
+
+  if (!user) {
+    return c.json<ErrorResponse>(
+      {
+        status: "error",
+        message: "no user",
+      },
+      400
+    )
+  }
+
+  const streak = await redis.get(`user:${user}:streak`)
+
+  if (!streak) {
+    return c.json<UserStreak>(
+      {
+        type: "streak",
+        streak: "0"
+      }
+    )
+  } else {
+    return c.json<UserStreak>(
+      {
+        type: "streak",
+        streak: streak
+      }
+    )
+  }
+
+})
+
+/*
+from the phaser template
 api.post('/increment', async (c) => {
   const { postId } = context;
   if (!postId) {
@@ -114,6 +206,7 @@ api.post('/decrement', async (c) => {
     type: 'decrement',
   });
 });
+*/
 
 /**
  * Publish a user-created puzzle as its own Reddit post. Validates the payload, creates the
