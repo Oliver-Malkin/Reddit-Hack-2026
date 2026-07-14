@@ -257,9 +257,13 @@ export class Chain {
   }
 
   /** Scale the label chip + shapes with the layout. `s` is the scene's tile scale; it's
-   *  clamped here so the label text stays readable even on the smallest canvases. */
+   *  clamped here so the label text stays readable even on the smallest canvases. The floor
+   *  sits below the old 0.72 so a cramped board's labels genuinely shrink with its tiles
+   *  (they used to pin near full size while everything else scaled down), but stays high
+   *  enough that the chip is still readable and comfortably tappable (it opens the
+   *  explainer tooltip). Full-size boards are unaffected. */
   setLayoutScale(s: number) {
-    const clamped = Phaser.Math.Clamp(s, 0.72, 1.1);
+    const clamped = Phaser.Math.Clamp(s, 0.6, 1.1);
     if (Math.abs(clamped - this.layoutScale) < 0.001) return;
     this.layoutScale = clamped;
     this.chip.setScale(clamped);

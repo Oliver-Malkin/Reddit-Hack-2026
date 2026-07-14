@@ -26,7 +26,15 @@ const config: Phaser.Types.Core.GameConfig = {
   input: { windowEvents: false },
   scale: {
     mode: Phaser.Scale.RESIZE,
-    autoCenter: Phaser.Scale.CENTER_BOTH,
+    // NO_CENTER — never CENTER_BOTH. In RESIZE mode the canvas is sized to fill the parent, so
+    // there is nothing to center; but Phaser still runs updateCenter() on every resize, and it
+    // computes the margin from the canvas's *current* bounding rect against the *new* parent
+    // size. On a grow-after-shrink the canvas hasn't reflowed to its new size yet, so the stale
+    // (smaller) bounds vs the larger parent yields a positive margin — e.g. (1200−500)/2 = 350px
+    // left — that shoves the whole canvas sideways (black gutter on one side, everything looks
+    // oversized because a large world is shown offset). Centering a fill-the-parent canvas is
+    // meaningless anyway, so disabling it removes the bug outright.
+    autoCenter: Phaser.Scale.NO_CENTER,
     width: 1024,
     height: 768,
   },
