@@ -2,13 +2,15 @@ import { Hono } from 'hono';
 import { context, redis, reddit } from '@devvit/web/server';
 import type {
   DecrementResponse,
+  DeletePuzzleResponse,
   IncrementResponse,
   InitResponse,
   PublishPuzzleResponse,
 } from '../../shared/api';
 import { createPuzzlePost } from '../core/post';
-import { cleanTitle, loadPuzzle, savePuzzle, validatePuzzle } from '../core/puzzleStore';
-import { getDailyDay } from '../core/dailyStore';
+import { cleanTitle, deletePuzzle, loadPuzzle, savePuzzle, validatePuzzle } from '../core/puzzleStore';
+import { getDailyDay, getDailyPuzzles, setDailyPuzzles } from '../core/dailyStore';
+import { puzzleForDifficulty } from '../../shared/dailyPuzzle';
 import { findBlockedTerm } from '../../shared/moderation';
 
 type ErrorResponse = {
@@ -45,6 +47,16 @@ api.get('/init', async (c) => {
       getDailyDay(postId),
     ]);
 
+    // Present on a daily post: that day's FROZEN easy/hard puzzles, so a future bank
+    // edit/regeneration can't retroactively change what this day showed.
+    const dailyPuzzles = dailyDay != null ? await resolveDailyPuzzles(dailyDay) : null;
+
+    // Only a community puzzle post needs to know who's asking (for the "delete my puzzle"
+    // control) — this extra round-trip is skipped entirely on the much more common daily post.
+    const isOwnPuzzle = stored
+      ? ((await reddit.getCurrentUsername()) ?? null) === stored.author
+      : false;
+
     return c.json<InitResponse>({
       type: 'init',
       postId: postId,
@@ -57,10 +69,12 @@ api.get('/init', async (c) => {
             puzzleTitle: stored.title,
             puzzleAuthor: stored.author,
             postUrl: `https://reddit.com/r/${context.subredditName}/comments/${postId}`,
+            isOwnPuzzle,
           }
         : {}),
       // Present on a daily post: which day's board to show (frozen at creation).
       ...(dailyDay != null ? { dailyDay } : {}),
+      ...(dailyPuzzles ? { dailyPuzzles } : {}),
     });
   } catch (error) {
     console.error(`API Init Error for post ${postId}:`, error);
@@ -74,6 +88,21 @@ api.get('/init', async (c) => {
     );
   }
 });
+
+/** The frozen easy/hard puzzles for a daily's UTC day. Legacy days that predate the freeze
+ *  (or where creation-time freezing failed) get backfilled here — locking them in from now on
+ *  using whatever the bank looks like at this moment, so at least no FURTHER bank edit can
+ *  move them. */
+async function resolveDailyPuzzles(day: number) {
+  const existing = await getDailyPuzzles(day);
+  if (existing) return existing;
+  const easy = puzzleForDifficulty('easy', day);
+  const hard = puzzleForDifficulty('hard', day);
+  if (!easy || !hard) return null;
+  const puzzles = { easy, hard };
+  await setDailyPuzzles(day, puzzles);
+  return puzzles;
+}
 
 api.post('/increment', async (c) => {
   const { postId } = context;
@@ -166,6 +195,51 @@ api.post('/puzzles/publish', async (c) => {
     console.error('Error publishing puzzle:', error);
     return c.json<ErrorResponse>(
       { status: 'error', message: 'Could not publish the puzzle. Try again.' },
+      500
+    );
+  }
+});
+
+/**
+ * Delete a community puzzle's own post. Only the puzzle's original creator may do this —
+ * checked against the stored `author` (see puzzleStore.savePuzzle) by the requesting user's
+ * actual Reddit username, never a client-supplied claim. The post itself is created by the
+ * app account (see core/post.createPuzzlePost), so deleting it is a plain app-level
+ * `post.delete()` rather than anything requiring extra Reddit permissions.
+ */
+api.post('/puzzles/delete', async (c) => {
+  const { postId } = context;
+  if (!postId) {
+    return c.json<ErrorResponse>({ status: 'error', message: 'postId is required' }, 400);
+  }
+
+  const stored = await loadPuzzle(postId);
+  if (!stored) {
+    return c.json<ErrorResponse>({ status: 'error', message: 'No puzzle found for this post.' }, 404);
+  }
+
+  const username = await reddit.getCurrentUsername();
+  if (!username || username !== stored.author) {
+    return c.json<ErrorResponse>(
+      { status: 'error', message: 'Only the puzzle\'s creator can delete it.' },
+      403
+    );
+  }
+
+  try {
+    const post = await reddit.getPostById(postId as `t3_${string}`);
+    await post.delete();
+    await deletePuzzle(postId);
+
+    return c.json<DeletePuzzleResponse>({
+      type: 'delete',
+      status: 'ok',
+      subredditUrl: `https://reddit.com/r/${context.subredditName}`,
+    });
+  } catch (error) {
+    console.error(`Error deleting puzzle post ${postId}:`, error);
+    return c.json<ErrorResponse>(
+      { status: 'error', message: 'Could not delete the puzzle. Try again.' },
       500
     );
   }

@@ -60,9 +60,13 @@ export function tileScaleFor(W: number, bandH: number, boxWidths: number[]): num
   const sumArea = boxWidths.reduce((a, w) => a + w, 0) * TILE_H;
   const areaCap = sumArea > 0 ? Math.sqrt((W * bandH * MAX_AREA_FILL) / sumArea) : 1;
   const maxScale = Math.min(1, cellCap, halfCap, heightCap, areaCap);
+  // A mild power curve on the sub-1 side shrinks tiles a bit more aggressively as the window
+  // gets smaller (a full-size board, maxScale===1, is untouched) — otherwise tiles stayed
+  // close to full size until a window shrank quite a lot, then dropped off suddenly.
+  const shaped = maxScale < 1 ? Math.pow(maxScale, 1.15) : maxScale;
   // Floor keeps a very long word on a tiny screen readable; in that rare case the other caps may
   // be missed, but everywhere realistic they win.
-  return Phaser.Math.Clamp((W - LAYOUT_MARGIN * 2) / widest, 0.3, maxScale);
+  return Phaser.Math.Clamp((W - LAYOUT_MARGIN * 2) / widest, 0.3, shaped);
 }
 
 /** Tiny deterministic PRNG (mulberry32) — a seeded stand-in for Math.random so a given seed
