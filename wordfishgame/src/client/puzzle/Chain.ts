@@ -42,6 +42,9 @@ const MIN_ROPE = 90;
 const CHIP_PAD = 6;
 /** Label chip height (its width varies with the text — see chipHalfW). */
 const CHIP_H = 26;
+/** Perpendicular gap between sibling chains (same tile pair) fanned onto parallel lanes /
+ *  nested loop rails — a touch wider than a rope's wobble so lanes read as distinct. */
+const LANE_SPACING = 30;
 /** How far inside the canvas a loop rail must stay. The rope is only the centerline —
  *  the shapes riding it are ~26px wide and wobble up to ~7px sideways, so they need
  *  this much slack before they visually clip the edge. */
@@ -107,8 +110,17 @@ export class Chain {
   private spinSpeeds: number[] = [];
   /** Every word tile in play — candidate routes are scored against all of them. */
   private tiles: WordTile[];
-  /** The other chains in play — routes and label chips keep out of each other's way. */
+  /** Every other chain in play — their label chips keep out of this one's way. */
   private peers: Chain[] = [];
+  /** Chains this one's ROUTE dodges — peers minus siblings (same tile pair). Siblings sit on
+   *  fixed lanes instead (see laneOffset), so they must NOT repel each other or a bundle of
+   *  same-pair chains cycles endlessly as each shoves the others onto new routes. */
+  private routePeers: Chain[] = [];
+  /** This chain's slot within its sibling group (chains on the SAME tile pair), and the group
+   *  size. Siblings fan onto distinct lanes — parallel on the direct route, nested rails on a
+   *  loop — so a bundle of same-pair chains never piles into one line. Lone chain → 0 of 1. */
+  private laneIndex = 0;
+  private laneCount = 1;
   /** Stable side (+1/-1) the direct route's cosmetic bow leans toward. */
   private seedSide: number;
   /** Sticky key of the currently-picked route option. */
@@ -126,6 +138,9 @@ export class Chain {
   /** Throttle bookkeeping for the route re-pick (see SOLVE_INTERVAL_MS). */
   private solveAccum = SOLVE_INTERVAL_MS;
   private cachedTarget: Phaser.Math.Vector2[] | null = null;
+  /** Y past which the rope must not stray — the top of the keyboard band, mirroring the
+   *  clamp on the tiles themselves. Unset (Infinity) falls back to the canvas floor. */
+  private bottomLimit = Number.POSITIVE_INFINITY;
 
   /** Direction is A → B: for the directional types A is the "from" end. `tiles` are all
    *  word tiles in play — candidate routes are penalized for crossing any of them. */
@@ -162,9 +177,56 @@ export class Chain {
     this.chip = this.buildChip();
   }
 
-  /** Wire up the other chains so their ropes can push each other apart. */
+  /** Wire up the other chains so their ropes can push each other apart. Siblings (same tile
+   *  pair) are handled separately: they fan onto fixed lanes and are excluded from the route
+   *  repulsion, which otherwise makes a same-pair bundle flip-flop forever. */
   setPeers(chains: Chain[]) {
     this.peers = chains.filter((c) => c !== this);
+    this.routePeers = this.peers.filter((c) => !this.sharesPair(c));
+
+    // The sibling group is every chain on this exact pair (this one included), taken in the
+    // stable array order so all siblings agree on who gets which lane.
+    const group = chains.filter((c) => c === this || this.sharesPair(c));
+    this.laneIndex = group.indexOf(this);
+    this.laneCount = group.length;
+  }
+
+  /** Signed perpendicular offset for this chain's lane — a symmetric fan across the group
+   *  (2 → ±½·spacing, 3 → −1,0,+1·spacing …). Zero for a lone chain. */
+  private laneOffset(): number {
+    if (this.laneCount <= 1) return 0;
+    return (this.laneIndex - (this.laneCount - 1) / 2) * LANE_SPACING;
+  }
+
+  /** True if `c` links the same two tiles as this chain, in either order. */
+  private sharesPair(c: Chain): boolean {
+    return (
+      (c.tileA === this.tileA && c.tileB === this.tileB) ||
+      (c.tileA === this.tileB && c.tileB === this.tileA)
+    );
+  }
+
+  /** Canonical perpendicular (world space) for this chain's tile pair — derived from a stable
+   *  ordering of the two tiles so every sibling fans the SAME way regardless of which end each
+   *  stores as A. Lane offsets are applied along this. */
+  private lanePerp(): { x: number; y: number } {
+    const [p, q] =
+      this.tileA.wordId <= this.tileB.wordId ? [this.tileA, this.tileB] : [this.tileB, this.tileA];
+    const dx = q.x - p.x;
+    const dy = q.y - p.y;
+    const len = Math.hypot(dx, dy) || 1;
+    return { x: -dy / len, y: dx / len };
+  }
+
+  /** The play area's floor (top of the keyboard band). Loops, edge penalties and the chip
+   *  all respect this so a chain can't dip under the keys — same rule the tiles follow. */
+  setBottomLimit(y: number) {
+    this.bottomLimit = y;
+  }
+
+  /** Effective bottom for routing: the play floor if set, else the canvas edge. */
+  private bottomBound(): number {
+    return Math.min(this.bottomLimit, this.scene.scale.height);
   }
 
   /** Scale the label chip + shapes with the layout. `s` is the scene's tile scale; it's
@@ -194,6 +256,7 @@ export class Chain {
     this.chip.destroy(); // container destroys its graphics + label too
     this.shapes = [];
     this.peers = [];
+    this.routePeers = [];
   }
 
   /** Where this chain's label chip currently sits — peers keep their chips away. */
@@ -269,8 +332,12 @@ export class Chain {
     const uy = dy / len;
     const eA = Chain.rayExit(0, 0, ux, uy, a.hx, a.hy);
     const eB = Chain.rayExit(0, 0, -ux, -uy, b.hx, b.hy);
-    const pA = new Phaser.Math.Vector2(a.cx + ux * eA, a.cy + uy * eA);
-    const pB = new Phaser.Math.Vector2(b.cx - ux * eB, b.cy - uy * eB);
+    // Siblings shift perpendicular onto their own lane, so same-pair chains run parallel
+    // instead of piling into one line (laneOffset is 0 for a lone chain).
+    const lp = this.lanePerp();
+    const lane = this.laneOffset();
+    const pA = new Phaser.Math.Vector2(a.cx + ux * eA + lp.x * lane, a.cy + uy * eA + lp.y * lane);
+    const pB = new Phaser.Math.Vector2(b.cx - ux * eB + lp.x * lane, b.cy - uy * eB + lp.y * lane);
     const bow = Math.min(len * 0.08, 16) * this.seedSide;
     const mid = new Phaser.Math.Vector2(
       (pA.x + pB.x) / 2 - uy * bow,
@@ -295,8 +362,18 @@ export class Chain {
     const horiz = side === 'right' || side === 'left'; // rail runs vertically
     const sign = side === 'right' || side === 'bottom' ? 1 : -1;
 
-    const aA = horiz ? v(a.cx + sign * a.hx, a.cy) : v(a.cx, a.cy + sign * a.hy);
-    const aB = horiz ? v(b.cx + sign * b.hx, b.cy) : v(b.cx, b.cy + sign * b.hy);
+    // Siblings leave/return at spread-out points along the exit face (clamped to stay on it)
+    // so a bundle doesn't all funnel through one spot, and each rides its own rail further out
+    // (laneIndex, below) — together fanning same-side loops instead of stacking them.
+    const along = this.laneOffset();
+    const alongA = horiz
+      ? Phaser.Math.Clamp(along, -a.hy + 8, a.hy - 8)
+      : Phaser.Math.Clamp(along, -a.hx + 8, a.hx - 8);
+    const alongB = horiz
+      ? Phaser.Math.Clamp(along, -b.hy + 8, b.hy - 8)
+      : Phaser.Math.Clamp(along, -b.hx + 8, b.hx - 8);
+    const aA = horiz ? v(a.cx + sign * a.hx, a.cy + alongA) : v(a.cx + alongA, a.cy + sign * a.hy);
+    const aB = horiz ? v(b.cx + sign * b.hx, b.cy + alongB) : v(b.cx + alongB, b.cy + sign * b.hy);
 
     // The rail sits past every tile whose span (along the rail's axis) overlaps the
     // stretch between the two anchors — those are the tiles the loop runs alongside.
@@ -313,12 +390,14 @@ export class Chain {
       if (tHi < lo || tLo > hi) continue;
       rail = sign > 0 ? Math.max(rail, edgeOf(tb)) : Math.min(rail, edgeOf(tb));
     }
-    rail += sign * LOOP_REACH[reach]!;
+    // Each sibling's rail sits one lane further out than the last, so same-side loops nest
+    // rather than share a rail (innermost = laneIndex 0, matching a lone chain).
+    rail += sign * (LOOP_REACH[reach]! + this.laneIndex * LANE_SPACING);
 
     // Never build a rail off the canvas. A squeezed loop that hugs the edge scores
     // honestly against the words it now crowds — and loses to a clearer side — where
     // an off-canvas rail would just vanish off-screen and win anyway.
-    const railMax = (horiz ? this.scene.scale.width : this.scene.scale.height) - EDGE_MARGIN;
+    const railMax = (horiz ? this.scene.scale.width : this.bottomBound()) - EDGE_MARGIN;
     rail = Phaser.Math.Clamp(rail, EDGE_MARGIN, railMax);
     const bulge = Phaser.Math.Clamp(rail + sign * 12, EDGE_MARGIN, railMax);
 
@@ -358,7 +437,7 @@ export class Chain {
     }
 
     const W = this.scene.scale.width;
-    const H = this.scene.scale.height;
+    const H = this.bottomBound();
     for (let s = 0; s < SAMPLES; s++) {
       const u = s / (SAMPLES - 1);
       const p = spline.getPointAt(u);
@@ -373,7 +452,7 @@ export class Chain {
         const pen = (own ? 0 : CLEARANCE) - Chain.tileClearance(p.x, p.y, tile);
         if (pen > 0) cost += pen * 8;
       }
-      for (const peer of this.peers) {
+      for (const peer of this.routePeers) {
         let d = Number.POSITIVE_INFINITY;
         for (const q of peer.display) d = Math.min(d, Math.hypot(p.x - q.x, p.y - q.y));
         if (d < 30) cost += (30 - d) * 2;
@@ -542,7 +621,7 @@ export class Chain {
     this.chipU += (bestU - this.chipU) * (1 - Math.exp(-dtMs / 250));
     const chipPos = curve.getPointAt(this.chipU);
     const W = this.scene.scale.width;
-    const H = this.scene.scale.height;
+    const H = this.bottomBound();
     const chipHalfW = this.chipHalf();
     const chipEdgeY = this.chipHeight() / 2 + 4;
     this.chip.setPosition(

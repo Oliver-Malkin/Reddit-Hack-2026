@@ -24,7 +24,7 @@ export const publishDailyPost = async (): Promise<Post> => {
   const shareImageUrl = await getShareImageUrl();
 
   const post = await reddit.submitCustomPost({
-    title: `WordFish — daily puzzle for ${utcDayLabel(day)}`,
+    title: `WordFish daily: ${utcDayLabel(day)}`,
     styles: shareImageUrl ? { shareImageUrl } : undefined,
   });
 

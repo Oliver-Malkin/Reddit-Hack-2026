@@ -5,19 +5,24 @@
  *  1. Vocab = top-10k English words by frequency (+ curated sequence words).
  *  2. Relation graph over the vocab (WordNet, CMU rhymes, computed letterplay,
  *     curated sequences) — see graph.mjs for the strict/liberal split.
- *  3. Assemble puzzles in several shapes:
+ *  3. Assemble puzzles in several shapes (difficulty is per-shape, see SHAPE_DIFF):
  *       EASY   path3    known — [hidden] — known
+ *              triclue  three knowns all clueing ONE hidden, IRREDUCIBLY (drop any clue and
+ *                       the answer is no longer unique — so all three are needed)
+ *              anchored path4 plus a third known clueing one of the hiddens
  *       HARD   path4    known — [hidden] — [hidden] — known
  *              diamond  two knowns, each linked to BOTH hiddens (a 4-cycle)
- *              anchored path4 plus a third known clueing one of the hiddens
  *              path5    known — [hidden] — [hidden] — [hidden] — known
+ *              loop5    path5 closed into a 5-cycle (two knowns, three hiddens round a ring)
  *  4. Every candidate passes a uniqueness check: no other word (or word tuple) in a
  *     ~73k-word lexicon satisfies all the clues at the answers' lengths.
  *  5. Manual vetting via review.html: ACCEPT locks a puzzle into a permanent stockpile
  *     (accepted.json) that every future run includes verbatim, no matter how the
- *     generator or scoring changes later; REJECT vetoes a puzzle's id forever
- *     (rejects.json). A regeneration fills only the slots not already covered by the
- *     accepted stockpile.
+ *     generator or scoring changes later. SKIP and BAN LINK write to rejects.json, which
+ *     holds two veto lists: skipped puzzle ids (passed over — that exact puzzle won't
+ *     re-emit, nothing declared wrong) and banned links (one bad clue vetoes every future
+ *     puzzle built on that relation). A regeneration fills only the slots not already
+ *     covered by the accepted stockpile.
  *  6. Selection balances LINK TYPES (rarer relation types are prioritized so all 8
  *     appear in roughly equal numbers), dedupes by word stem, caps each hard shape, then
  *     places the accepted stockpile first (fixed, append-only order — never reshuffled,
@@ -41,10 +46,25 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..', '..');
 
 const SEED = 0x5eedf15b; // change to reroll the bank
-const BANK_SIZE = 120; // per difficulty
-// How many of each hard shape the bank may hold, at most (they compete on score/type
-// balance below the caps; shortfalls in one shape are filled by the others).
-const HARD_SHAPE_QUOTA = { path4: 45, diamond: 40, anchored: 25, path5: 15 };
+// How many FRESH (not-yet-accepted) puzzles to surface per difficulty each run, on top of
+// the accepted stockpile — the review pool. Independent of stockpile size, so the number
+// of new puzzles to vet stays constant as accepted.json grows (it never shrinks to zero).
+const FRESH_TARGET = 100; // per difficulty
+// How many of each shape the FRESH pool may hold, at most (they compete on score/type
+// balance below the caps; shortfalls in one shape are filled by the others). Each set sums
+// above FRESH_TARGET so the target, not the caps, is the binding limit — the caps just stop
+// the most numerous shape (path3 / path4) from crowding out the rarer ones you want to vet.
+const EASY_SHAPE_QUOTA = { path3: 65, triclue: 30, anchored: 30 };
+const HARD_SHAPE_QUOTA = { path4: 50, diamond: 20, path5: 22, loop5: 22 };
+// New/rare shapes are picked FIRST (before the abundant path3/path4/path5), so those can't
+// eat the whole freshTarget before enough of them land in the review batch.
+const FORCE_FIRST_SHAPES = new Set(['triclue', 'loop5']);
+// Irreducible triclues exist only in the low tens, and share common clue words, so the
+// ordinary "no two fresh puzzles share a word-stem" guard would suppress nearly all of
+// them. Exempting them from it surfaces as many as exist; they may share a word with
+// another fresh puzzle, which is fine for vetting. (loop5 is force-first but NOT exempt —
+// keeping its stem guard avoids near-duplicate rings from the same rhyme family.)
+const STEM_EXEMPT_SHAPES = new Set(['triclue']);
 
 // Rank ceilings (google-10k index): how common words must be for each slot.
 const EASY_HIDDEN_MAX_RANK = 3500;
@@ -52,6 +72,10 @@ const EASY_KNOWN_MAX_RANK = 4500;
 const HARD_HIDDEN_MAX_RANK = 6500;
 const HARD_KNOWN_MAX_RANK = 5500;
 const SEQ_WORD_RANK = 4000; // rank assigned to curated sequence words missing from the list
+// A triclue clue must individually admit at least this many lexicon words (its "spread"),
+// so no single clue narrows the answer much — the solve has to combine all three. Lower to
+// find more triclues, raise to make each clue vaguer (harder). See pickTriclue.
+const MIN_TRICLUE_SPREAD = 8;
 
 const LINK_TYPE_LIST = ['synonym', 'antonym', 'hypernym', 'anagram', 'meronym', 'lettersubset', 'sequence', 'rhyme'];
 const MEANING = new Set(['synonym', 'antonym', 'hypernym', 'meronym', 'sequence']);
@@ -95,6 +119,14 @@ function puzzleId(puzzle) {
   return (h >>> 0).toString(36);
 }
 
+/** Direction-insensitive key for a single link between two word TEXTS (not slot ids).
+ *  "SOURCE anagram COURSE" and "COURSE anagram SOURCE" collapse to the same key, so a
+ *  ban lands regardless of which of the pair the generator later chooses to hide. */
+function linkKey(type, a, b) {
+  const [x, y] = a < b ? [a, b] : [b, a];
+  return `${type}|${x}~${y}`;
+}
+
 // ---------- load data ----------
 
 console.log('loading datasets…');
@@ -130,15 +162,26 @@ const rank = (w) => vocabRank.get(w) ?? Infinity;
 
 const wn = loadWordNet();
 
-// Validation lexicon: vocab + every single-word WordNet lemma. ~70k words a solver
-// might legitimately answer with — the uniqueness check runs against this.
+const cmu = parseCmu(readFileSync(join(HERE, 'data', 'cmudict.dict'), 'utf8'));
+
+// Validation lexicon: every word a solver might legitimately answer with — the uniqueness
+// check REJECTS a puzzle if any lexicon word (beyond the intended answer) fits all its clues,
+// so recall matters far more than precision here. Three sources:
+//   - vocab (google-10k) — the puzzle-answer vocabulary;
+//   - every single-word WordNet lemma;
+//   - every CMU pronouncing-dictionary word.
+// The last is essential: google-10k and WordNet lemmas are mostly BASE forms, so common
+// inflections (LAYS, EMBARKS, SPARKS) were absent — and a slot whose only lexicon match was
+// the intended answer looked "unique" even when an unlisted inflection also fit (e.g. PAYS
+// passed while LAYS, equally valid, was invisible). CMU carries those inflected forms.
 const vLex = new Set(vocabRank.keys());
 for (const [lemmaFile] of wn.senses) {
   const lemma = lemmaFile.slice(0, lemmaFile.indexOf('|'));
   if (/^[a-z]+$/.test(lemma) && lemma.length >= 3 && lemma.length <= 12) vLex.add(lemma);
 }
-
-const cmu = parseCmu(readFileSync(join(HERE, 'data', 'cmudict.dict'), 'utf8'));
+for (const w of cmu.keys.keys()) {
+  if (w.length >= 3 && w.length <= 12 && /[aeiouy]/.test(w)) vLex.add(w);
+}
 
 console.log(`vocab ${vocabRank.size}, lexicon ${vLex.size} — building graph…`);
 const graph = buildGraph({ wn, vocabRank, vLex, cmu, sequencePairs: SEQUENCE_PAIRS });
@@ -148,33 +191,71 @@ const graph = buildGraph({ wn, vocabRank, vLex, cmu, sequencePairs: SEQUENCE_PAI
   console.log('strict edges:', Object.fromEntries([...counts].sort((a, b) => b[1] - a[1])));
 }
 
-// Previously vetoed puzzles (see review.html) — never re-emit these.
+// Vetting decisions from review.html. Two independent veto lists:
+//   skips — exact-puzzle ids the vetter passed on (too easy/boring/etc.); nothing is
+//           declared wrong, that one puzzle simply won't be re-emitted.
+//   links — a single {type, words:[a,b]} relation banned outright. Usually it's one bad
+//           clue, not the whole puzzle, that blocks acceptance, so a banned link vetoes
+//           EVERY future puzzle built on that relation (whichever word it hides).
+// Back-compat: an older rejects.json was a bare array of ids, or {ids,...}; both read as skips.
 const rejectsPath = join(HERE, 'rejects.json');
-const rejects = new Set(existsSync(rejectsPath) ? JSON.parse(readFileSync(rejectsPath, 'utf8')) : []);
-if (rejects.size > 0) console.log(`loaded ${rejects.size} rejected puzzle ids`);
+const rejectsRaw = existsSync(rejectsPath) ? JSON.parse(readFileSync(rejectsPath, 'utf8')) : null;
+const rejectsData = Array.isArray(rejectsRaw)
+  ? { skips: rejectsRaw, links: [] }
+  : { skips: rejectsRaw?.skips ?? rejectsRaw?.ids ?? [], links: rejectsRaw?.links ?? [] };
+const skips = new Set(rejectsData.skips);
+const bannedLinks = new Set(rejectsData.links.map((l) => linkKey(l.type, l.words[0], l.words[1])));
+if (skips.size || bannedLinks.size) {
+  console.log(`loaded ${skips.size} skipped id(s), ${bannedLinks.size} banned link(s)`);
+}
+
+/** Every link of a puzzle as a direction-insensitive word-text key (see linkKey). */
+function puzzleLinkKeys(puzzle) {
+  const text = new Map(puzzle.words.map((w) => [w.id, w.text]));
+  return puzzle.links.map((l) => linkKey(l.type, text.get(l.from), text.get(l.to)));
+}
+const hasBannedLink = (puzzle) =>
+  bannedLinks.size > 0 && puzzleLinkKeys(puzzle).some((k) => bannedLinks.has(k));
 
 // Manually approved puzzles (see review.html) — the permanent stockpile. Stored as full
 // puzzle objects (not just ids) so they survive changes to the generator/scoring/graph;
 // every run includes ALL of them verbatim, on top of whatever fresh slots remain. A
-// reject can retroactively evict a previously accepted puzzle (filtered out below).
+// later skip can retroactively evict a previously accepted puzzle (filtered out below);
+// a banned link does NOT — the vetter accepted that puzzle knowing the clue it contains.
 const acceptedPath = join(HERE, 'accepted.json');
 const acceptedRaw = existsSync(acceptedPath) ? JSON.parse(readFileSync(acceptedPath, 'utf8')) : [];
-const accepted = acceptedRaw.filter((a) => !rejects.has(a.id));
+const accepted = acceptedRaw.filter((a) => !skips.has(a.id));
 if (accepted.length > 0) console.log(`loaded ${accepted.length} accepted puzzles from the stockpile`);
 
 // A puzzle's shape is fully determined by (word count, hidden count, link count) — see
 // the shape comment at the top of this file for what each combination looks like.
 const SHAPE_BY_SIGNATURE = {
   '3|1|2': 'path3',
+  '4|1|3': 'triclue',
   '4|2|3': 'path4',
   '4|2|4': 'diamond',
   '5|2|4': 'anchored',
   '5|3|4': 'path5',
+  '5|3|5': 'loop5',
 };
 function deriveShape(puzzle) {
   const hiddenCount = puzzle.words.filter((w) => w.hidden).length;
   return SHAPE_BY_SIGNATURE[`${puzzle.words.length}|${hiddenCount}|${puzzle.links.length}`] ?? 'custom';
 }
+
+// Which daily track each shape ships in. The single source of truth: builders route new
+// candidates here, and accepted puzzles are re-classified by their shape (so moving a shape
+// between difficulties automatically moves every already-accepted puzzle of that shape too).
+const SHAPE_DIFF = {
+  path3: 'easy',
+  triclue: 'easy',
+  anchored: 'easy', // moved from hard: the extra anchor gives away too much for a "hard"
+  path4: 'hard',
+  diamond: 'hard',
+  path5: 'hard',
+  loop5: 'hard',
+};
+const diffOfShape = (shape) => SHAPE_DIFF[shape] ?? 'hard';
 const stemsOf = (puzzle) => puzzle.words.map((w) => w.text.toLowerCase().slice(0, 4));
 const typesOf = (puzzle) => puzzle.links.map((l) => l.type);
 
@@ -281,8 +362,9 @@ function scorePuzzle(words, types, shape = 'path3') {
   for (const w of words) {
     if (w.length >= 4 && w.length <= 7) score += 0.25;
   }
-  if (shape === 'diamond' || shape === 'path5') score += 1; // novelty
+  if (shape === 'diamond' || shape === 'path5' || shape === 'loop5') score += 1; // novelty
   if (shape === 'anchored') score += 0.5;
+  if (shape === 'triclue') score += 3; // irreducible triclues are rare — prioritize into the batch
   return score;
 }
 
@@ -299,7 +381,8 @@ const word = (id, text, hidden = false) =>
  *  locked into the accepted stockpile — no point generating a duplicate of either). */
 function candidate(puzzle, lowerWords, types, shape, score) {
   const id = puzzleId(puzzle);
-  if (rejects.has(id) || acceptedIds.has(id)) return null;
+  if (skips.has(id) || acceptedIds.has(id)) return null;
+  if (hasBannedLink(puzzle)) return null;
   return { puzzle, id, types, shape, score, stems: lowerWords.map((w) => w.slice(0, 4)) };
 }
 
@@ -320,10 +403,48 @@ function clueEdges(hidden, maxKnownRank, exclude = []) {
     .sort((a, b) => rank(a.other) - rank(b.other));
 }
 
-// --- EASY (path3) + the unique (hidden, known, known) triples diamonds are built from ---
+// Every builder emits into one pool; difficulty routing is by shape (SHAPE_DIFF), so a
+// shape's daily track is decided in exactly one place. `candidate()` returns null for a
+// vetoed/duplicate puzzle, which pushCandidate simply drops.
+const easyCandidates = [];
+const hardCandidates = [];
+const pushCandidate = (c) => {
+  if (!c) return;
+  (diffOfShape(c.shape) === 'easy' ? easyCandidates : hardCandidates).push(c);
+};
+
+/** Find 3 clue edges forming a "Venn" triclue — the answer is the single word in the
+ *  intersection of three individually BROAD clues. Requirements:
+ *   - each clue on its own admits many words (spread ≥ MIN_TRICLUE_SPREAD) — so no single
+ *     clue (an anagram, or a "hides inside a known" letter clue) nearly gives it away, and
+ *     the difficulty comes from combining all three;
+ *   - the three together pin it uniquely, yet every 2-of-3 subset stays ambiguous, so each
+ *     clue is genuinely load-bearing (irreducible).
+ *  Distinct knowns, no stem clash. Rare, so we search combinations. */
+function pickTriclue(hidden, pool) {
+  const L = hidden.length;
+  const loose = pool.filter((e) => clueCandidates(e, L).size >= MIN_TRICLUE_SPREAD).slice(0, 9);
+  for (let i = 0; i < loose.length; i++) {
+    for (let j = i + 1; j < loose.length; j++) {
+      for (let k = j + 1; k < loose.length; k++) {
+        const trio = [loose[i], loose[j], loose[k]];
+        const [a, b, c] = trio;
+        if (a.other === b.other || a.other === c.other || b.other === c.other) continue;
+        if (sharesStem(a.other, b.other) || sharesStem(a.other, c.other) || sharesStem(b.other, c.other)) continue;
+        // All three needed: unique together, ambiguous with any one removed.
+        if (!isUniqueSlot(hidden, trio)) continue;
+        if (isUniqueSlot(hidden, [a, b]) || isUniqueSlot(hidden, [a, c]) || isUniqueSlot(hidden, [b, c])) continue;
+        return trio;
+      }
+    }
+  }
+  return null;
+}
+
+// --- EASY (path3, triclue) + the unique (hidden, known, known) triples that diamonds and
+//     loops are built from ---
 
 console.log('generating easy + collecting unique triples…');
-const easyCandidates = [];
 /** knownPairKey -> [{hidden, e1, e2}] — every hidden uniquely pinned by that pair of
  *  knowns. Two entries under one key with different hiddens = a diamond puzzle. */
 const triplesByKnowns = new Map();
@@ -362,16 +483,38 @@ for (const [hidden] of vocabRank) {
       words: [word('w0', e1.other), word('w1', hidden, true), word('w2', e2.other)],
       links: [link(e1.type, 'w1', 'w0', e1.role), link(e2.type, 'w1', 'w2', e2.role)],
     };
-    const c = candidate(puzzle, [e1.other, hidden, e2.other], [e1.type, e2.type], 'path3', score);
-    if (c) easyCandidates.push(c);
+    pushCandidate(candidate(puzzle, [e1.other, hidden, e2.other], [e1.type, e2.type], 'path3', score));
+  }
+
+  // triclue: three easy knowns all clueing this one hidden — three angles pin it fast.
+  if (hiddenOk(hidden, EASY_HIDDEN_MAX_RANK, 8)) {
+    const easyPool = pool.filter((e) => rank(e.other) <= EASY_KNOWN_MAX_RANK);
+    const tri = pickTriclue(hidden, easyPool);
+    if (tri) {
+      const words = [hidden, tri[0].other, tri[1].other, tri[2].other];
+      const types = tri.map((e) => e.type);
+      const puzzle = {
+        words: [
+          word('w0', hidden, true),
+          word('w1', tri[0].other),
+          word('w2', tri[1].other),
+          word('w3', tri[2].other),
+        ],
+        links: [
+          link(tri[0].type, 'w0', 'w1', tri[0].role),
+          link(tri[1].type, 'w0', 'w2', tri[1].role),
+          link(tri[2].type, 'w0', 'w3', tri[2].role),
+        ],
+      };
+      pushCandidate(candidate(puzzle, words, types, 'triclue', scorePuzzle(words, types, 'triclue')));
+    }
   }
 }
 console.log(`  ${easyCandidates.length} easy candidates, ${triplesByKnowns.size} known-pairs`);
 
-// --- HARD path4 (+ anchored variant) ---
+// --- path4 (hard) + anchored variant (easy — routed by shape) ---
 
-console.log('generating hard path4 + anchored…');
-const hardCandidates = [];
+console.log('generating path4 + anchored…');
 const seenHiddenPairs = new Set();
 for (const middleEdge of graph.strictEdges) {
   for (const flip of [false, true]) {
@@ -409,14 +552,9 @@ for (const middleEdge of graph.strictEdges) {
       words: [word('w0', eA.other), word('w1', h1, true), word('w2', h2, true), word('w3', eB.other)],
       links: [link(eA.type, 'w1', 'w0', eA.role), midLink, link(eB.type, 'w2', 'w3', eB.role)],
     };
-    const c4 = candidate(
-      path4,
-      [eA.other, h1, h2, eB.other],
-      [eA.type, middle.type, eB.type],
-      'path4',
-      best.score
+    pushCandidate(
+      candidate(path4, [eA.other, h1, h2, eB.other], [eA.type, middle.type, eB.type], 'path4', best.score)
     );
-    if (c4) hardCandidates.push(c4);
 
     // Anchored variant: a third known clueing h2 from a fresh angle. Uniqueness only
     // tightens with an extra clue, so no re-check is needed.
@@ -429,22 +567,15 @@ for (const middleEdge of graph.strictEdges) {
         words: [...path4.words, word('w4', anchor.other)],
         links: [...path4.links, link(anchor.type, 'w2', 'w4', anchor.role)],
       };
-      const cA = candidate(
-        anchored,
-        [eA.other, h1, h2, eB.other, anchor.other],
-        [eA.type, middle.type, eB.type, anchor.type],
-        'anchored',
-        scorePuzzle(
-          [eA.other, h1, h2, eB.other, anchor.other],
-          [eA.type, middle.type, eB.type, anchor.type],
-          'anchored'
-        )
+      const anchoredWords = [eA.other, h1, h2, eB.other, anchor.other];
+      const anchoredTypes = [eA.type, middle.type, eB.type, anchor.type];
+      pushCandidate(
+        candidate(anchored, anchoredWords, anchoredTypes, 'anchored', scorePuzzle(anchoredWords, anchoredTypes, 'anchored'))
       );
-      if (cA) hardCandidates.push(cA);
     }
   }
 }
-console.log(`  ${hardCandidates.length} path4/anchored candidates`);
+console.log(`  path4/anchored done (${easyCandidates.length} easy, ${hardCandidates.length} hard so far)`);
 
 // --- HARD diamond: K1 and K2 each clue BOTH hiddens, via different relations ---
 
@@ -478,7 +609,7 @@ for (const [, group] of triplesByKnowns) {
       };
       const c = candidate(puzzle, words, types, 'diamond', scorePuzzle(words, types, 'diamond'));
       if (c) {
-        hardCandidates.push(c);
+        pushCandidate(c);
         diamondCount++;
         taken++;
       }
@@ -487,10 +618,13 @@ for (const [, group] of triplesByKnowns) {
 }
 console.log(`  ${diamondCount} diamond candidates`);
 
-// --- HARD path5: three hiddens in a row ---
+// --- HARD path5 (three hiddens in a row) + loop5 (path5 closed into a ring) ---
 
-console.log('generating hard path5…');
+console.log('generating hard path5 + loop5…');
+/** Strict-edge relation between two known words, if any (used to close a loop5 ring). */
+const strictLinkBetween = (a, b) => (graph.byWord.get(a) ?? []).find((e) => e.other === b);
 let path5Count = 0;
+let loop5Count = 0;
 let path5Attempts = 0;
 const PATH5_MAX_ATTEMPTS = 60_000;
 outer: for (const [h2] of vocabRank) {
@@ -538,13 +672,31 @@ outer: for (const [h2] of vocabRank) {
       };
       const c = candidate(puzzle, words, types, 'path5', scorePuzzle(words, types, 'path5'));
       if (c) {
-        hardCandidates.push(c);
+        pushCandidate(c);
         path5Count++;
+      }
+
+      // loop5: the SAME three-hidden chain, but close the ring with a relation between the
+      // two end knowns (w0 — w4). Only two words are shown, and uniqueness is exactly the
+      // path5 uniqueness just verified — the closing link joins two KNOWN words, so it adds
+      // no constraint on the hiddens, it only makes the shape a full loop.
+      const closer = strictLinkBetween(aEdge.other, bEdge.other);
+      if (closer) {
+        const loopTypes = [...types, closer.type];
+        const loop = {
+          words: puzzle.words,
+          links: [...puzzle.links, link(closer.type, 'w0', 'w4', closer.role)],
+        };
+        const cl = candidate(loop, words, loopTypes, 'loop5', scorePuzzle(words, loopTypes, 'loop5'));
+        if (cl) {
+          pushCandidate(cl);
+          loop5Count++;
+        }
       }
     }
   }
 }
-console.log(`  ${path5Count} path5 candidates (${path5Attempts} joint checks)`);
+console.log(`  ${path5Count} path5 + ${loop5Count} loop5 candidates (${path5Attempts} joint checks)`);
 
 // ---------- selection: balance link types, dedupe stems, cap shapes ----------
 
@@ -557,12 +709,16 @@ console.log(`  ${path5Count} path5 candidates (${path5Attempts} joint checks)`);
  *    and FELT/left — or COURSE and COURSES — can't both make the bank;
  *  - optional per-shape quota keeps the hard bank's structure mix.
  *
- * `stockpile` (manually accepted puzzles for this difficulty) is force-included ahead
- * of the loop, exempt from every guard above — the vetter already judged each one
- * individually, so two accepted puzzles ARE allowed to share a stem. Fresh candidates
- * still avoid colliding with the stockpile's stems/types/shapes. If the stockpile alone
- * meets or exceeds `size`, no fresh candidates are picked at all — nothing accepted is
- * ever dropped to make room, the bank simply grows past `size`.
+ * `stockpile` (manually accepted puzzles for this difficulty) is force-included ahead of
+ * the loop, exempt from every guard below. The stem/type/shape guards are measured over
+ * the FRESH pool alone: fresh puzzles don't collide with EACH OTHER (so you never review
+ * two near-identical new ones), but a fresh puzzle MAY reuse a word that appears in some
+ * accepted puzzle — with a large stockpile, forbidding that starves the rarer shapes
+ * (diamonds especially) and would shrink the review pool. It's not a duplicate: exact
+ * repeats of accepted/skipped puzzles are already excluded by id in candidate().
+ * Exactly `freshTarget` fresh puzzles are picked (or as many as exist), on top of the
+ * whole stockpile — the bank size therefore grows with accepted.json, never shrinks the
+ * review pool to zero the way a fixed total cap did.
  *
  * The stockpile keeps the exact order it has in accepted.json (append-only — see
  * review.html's copy button) and is placed FIRST, unshuffled. Only the freshly-picked
@@ -571,23 +727,36 @@ console.log(`  ${path5Count} path5 candidates (${path5Attempts} joint checks)`);
  * forever, no matter how many more puzzles you accept later or how the fresh pool
  * changes; only the not-yet-curated filler tail reshuffles across regenerations.
  */
-function pickBalanced(candidates, size, shapeQuota = null, stockpile = []) {
+function pickBalanced(candidates, freshTarget, shapeQuota = null, stockpile = []) {
+  // Guards are measured over the fresh pool only (nothing seeded from the stockpile), so
+  // fresh puzzles balance among themselves. STEM_EXEMPT_SHAPES skip the stem guard entirely.
   const usedStems = new Set();
   const typeCount = new Map(LINK_TYPE_LIST.map((t) => [t, 0]));
   const shapeCount = new Map();
-  for (const s of stockpile) {
-    for (const st of s.stems) usedStems.add(st);
-    for (const t of s.types) typeCount.set(t, (typeCount.get(t) ?? 0) + 1);
-    shapeCount.set(s.shape, (shapeCount.get(s.shape) ?? 0) + 1);
+  const fresh = [];
+
+  const withinQuota = (c) => !shapeQuota || (shapeCount.get(c.shape) ?? 0) < (shapeQuota[c.shape] ?? Infinity);
+  const canTake = (c) =>
+    (STEM_EXEMPT_SHAPES.has(c.shape) || !c.stems.some((s) => usedStems.has(s))) && withinQuota(c);
+  const take = (c) => {
+    fresh.push(c);
+    // Exempt shapes don't reserve their stems, so they never block other picks.
+    if (!STEM_EXEMPT_SHAPES.has(c.shape)) for (const s of c.stems) usedStems.add(s);
+    for (const t of c.types) typeCount.set(t, (typeCount.get(t) ?? 0) + 1);
+    shapeCount.set(c.shape, (shapeCount.get(c.shape) ?? 0) + 1);
+  };
+
+  const sorted = [...candidates].sort((a, b) => b.score - a.score);
+  // Force-include the rare/new shapes first (best score first, respecting their own guards):
+  // they're so scarce the type-balanced loop below would let the abundant shapes (path3 /
+  // path4 / path5) fill the freshTarget before enough of them land.
+  const remaining = [];
+  for (const c of sorted) {
+    if (FORCE_FIRST_SHAPES.has(c.shape) && fresh.length < freshTarget && canTake(c)) take(c);
+    else remaining.push(c);
   }
 
-  const remaining = [...candidates].sort((a, b) => b.score - a.score);
-  const canTake = (c) =>
-    !c.stems.some((s) => usedStems.has(s)) &&
-    (!shapeQuota || (shapeCount.get(c.shape) ?? 0) < (shapeQuota[c.shape] ?? Infinity));
-
-  const fresh = [];
-  while (stockpile.length + fresh.length < size && remaining.length > 0) {
+  while (fresh.length < freshTarget && remaining.length > 0) {
     const typesByNeed = [...typeCount.entries()].sort((a, b) => a[1] - b[1]).map(([t]) => t);
     let idx = -1;
     for (const t of typesByNeed) {
@@ -596,24 +765,29 @@ function pickBalanced(candidates, size, shapeQuota = null, stockpile = []) {
     }
     if (idx === -1) idx = remaining.findIndex(canTake);
     if (idx === -1) break;
-    const chosen = remaining.splice(idx, 1)[0];
-    fresh.push(chosen);
-    for (const s of chosen.stems) usedStems.add(s);
-    for (const t of chosen.types) typeCount.set(t, (typeCount.get(t) ?? 0) + 1);
-    shapeCount.set(chosen.shape, (shapeCount.get(chosen.shape) ?? 0) + 1);
+    take(remaining.splice(idx, 1)[0]);
   }
   const rnd = mulberry32(SEED);
   return { picked: [...stockpile, ...shuffle(fresh, rnd)], typeCount, shapeCount };
 }
 
-const acceptedEasy = accepted.filter((a) => a.diff === 'easy').map(acceptedCandidate);
-const acceptedHard = accepted.filter((a) => a.diff === 'hard').map(acceptedCandidate);
-const easy = pickBalanced(easyCandidates, BANK_SIZE, null, acceptedEasy);
-const hard = pickBalanced(hardCandidates, BANK_SIZE, HARD_SHAPE_QUOTA, acceptedHard);
+// Difficulty of an accepted puzzle follows its SHAPE, not the (possibly stale) diff stored
+// in accepted.json — so reclassifying a shape (anchored → easy) automatically moves every
+// already-accepted puzzle of that shape into the right track.
+const acceptedEasy = accepted.filter((a) => diffOfShape(deriveShape(a.puzzle)) === 'easy').map(acceptedCandidate);
+const acceptedHard = accepted.filter((a) => diffOfShape(deriveShape(a.puzzle)) === 'hard').map(acceptedCandidate);
+{
+  const byShape = (arr) => arr.reduce((m, c) => ((m[c.shape] = (m[c.shape] ?? 0) + 1), m), {});
+  console.log('  easy candidate pool:', byShape(easyCandidates));
+  console.log('  hard candidate pool:', byShape(hardCandidates));
+}
+const easy = pickBalanced(easyCandidates, FRESH_TARGET, EASY_SHAPE_QUOTA, acceptedEasy);
+const hard = pickBalanced(hardCandidates, FRESH_TARGET, HARD_SHAPE_QUOTA, acceptedHard);
 if (acceptedEasy.length > 0 || acceptedHard.length > 0) {
   console.log(`stockpile: ${acceptedEasy.length} easy + ${acceptedHard.length} hard puzzles locked in`);
 }
 console.log('easy link types:', Object.fromEntries(easy.typeCount));
+console.log('easy shapes:', Object.fromEntries(easy.shapeCount));
 console.log('hard link types:', Object.fromEntries(hard.typeCount));
 console.log('hard shapes:', Object.fromEntries(hard.shapeCount));
 
@@ -623,7 +797,7 @@ const banner = `/** AUTO-GENERATED by scripts/puzzlegen/generate.mjs — do not 
  *  ${easy.picked.length} easy + ${hard.picked.length} hard machine-generated daily puzzles.
  *  Every puzzle passed a uniqueness check: no other word (or word tuple) in a
  *  ~${Math.round(vLex.size / 1000)}k-word lexicon fits all the clues at the answers' lengths.
- *  Vet puzzles in scripts/puzzlegen/review.html; rejected ids live in rejects.json. */
+ *  Vet puzzles in scripts/puzzlegen/review.html; skips + banned links live in rejects.json. */
 import type { Puzzle } from './types';
 
 export const easyPuzzles: Puzzle[] = ${JSON.stringify(easy.picked.map((c) => c.puzzle), null, 2)};
@@ -682,16 +856,21 @@ const reviewHtml = `<!DOCTYPE html>
   label.gameurl input { font: inherit; width: 11rem; padding: .2rem .4rem; border-radius: .4rem; border: 1px solid color-mix(in srgb, CanvasText 30%, transparent); background: transparent; color: inherit; }
   .preview-btn { background: color-mix(in srgb, #7c3aed 12%, transparent); border-color: #7c3aed; }
   .card { display: flex; gap: .9rem; align-items: center; padding: .55rem .7rem; border-radius: .6rem; margin: .4rem 0; border: 1px solid color-mix(in srgb, CanvasText 15%, transparent); }
-  .card.rejected { opacity: .45; background: color-mix(in srgb, #dc2626 8%, transparent); }
-  .card.rejected .chain { text-decoration: line-through; }
+  .card.skipped { opacity: .5; background: color-mix(in srgb, CanvasText 6%, transparent); }
   .card.accepted { background: color-mix(in srgb, #16a34a 10%, transparent); border-color: color-mix(in srgb, #16a34a 40%, transparent); }
   .meta { font-size: .75rem; opacity: .65; min-width: 8.5rem; }
-  .chain div { font-size: .95rem; }
+  .chain { flex: 1; }
+  .linkrow { display: flex; align-items: center; gap: .5rem; }
+  .chainline { font-size: .95rem; }
+  .linkrow .ban-link { font-size: .7rem; padding: .05rem .4rem; min-width: 0; opacity: 0; border-radius: .4rem; }
+  .card:hover .ban-link, .ban-link.on { opacity: 1; }
+  .ban-link.on { background: #b45309; border-color: #b45309; color: #fff; }
+  .linkrow.link-banned .chainline { text-decoration: line-through; opacity: .5; }
   .chain b { color: #2563eb; }
   .btns { margin-left: auto; display: flex; gap: .4rem; flex-shrink: 0; }
   .btns button { min-width: 4.6rem; }
   .accept-btn.on { background: #16a34a; border-color: #16a34a; color: #fff; }
-  .reject-btn.on { background: #dc2626; border-color: #dc2626; color: #fff; }
+  .skip-btn.on { background: color-mix(in srgb, CanvasText 55%, transparent); border-color: color-mix(in srgb, CanvasText 55%, transparent); color: Canvas; }
   h2 { margin-top: 1.6rem; }
   #status { font-size: .85rem; opacity: .75; }
   .hint { font-size: .85rem; opacity: .75; margin: 1rem 0; }
@@ -709,12 +888,16 @@ const reviewHtml = `<!DOCTYPE html>
   </label>
 </header>
 <p class="hint"><em>Accept</em> locks a puzzle into the permanent stockpile — every future
-regeneration includes it verbatim, so it's off your plate for good. <em>Reject</em> vetoes a
-puzzle's id forever. After marking some, copy whichever file(s) changed, paste over the
-matching file in <code>scripts/puzzlegen/</code>, and re-run <code>npm run generate:puzzles</code>
-— accepted puzzles keep their slot, rejected ones are replaced by fresh candidates. Toggling
-a button back off before copying retracts that decision. ${accepted.length} puzzle(s) already
-in the stockpile and ${rejects.size} rejected id(s) are pre-marked below. <em>Preview</em> opens
+regeneration includes it verbatim, so it's off your plate for good. <em>Ban</em> (per clue,
+appears on hover) is the main tool: it vetoes that single link everywhere, so every future
+puzzle built on that bad relation is dropped while variants that fix it stay eligible.
+<em>Skip</em> passes on just this one puzzle — too easy or boring, nothing actually wrong — so
+that exact puzzle won't reappear but its words and clues stay free to use elsewhere. After
+marking some, copy whichever file(s) changed, paste over the matching file in
+<code>scripts/puzzlegen/</code>, and re-run <code>npm run generate:puzzles</code> — accepted
+puzzles keep their slot, skipped/banned ones are replaced by fresh candidates. Toggling a button
+back off before copying retracts that decision. ${accepted.length} puzzle(s) in the stockpile,
+${skips.size} skipped id(s) and ${bannedLinks.size} banned link(s) are pre-marked below. <em>Preview</em> opens
 the puzzle in the actual running game — start a dev server first, then adjust the "game server"
 field above to wherever <code>game.html</code> actually loads for you (e.g. just the origin if
 your server root IS <code>src/client</code>, or add the <code>/src/client</code> path if it's
@@ -723,10 +906,16 @@ serving from the repo root instead); saved for next time.</p>
 <script>
 const DATA = ${JSON.stringify(reviewData).replace(/</g, '\\u003c')};
 const PRIOR_ACCEPTED = ${JSON.stringify(accepted).replace(/</g, '\\u003c')};
-const PRIOR_REJECTS = ${JSON.stringify([...rejects]).replace(/</g, '\\u003c')};
+const PRIOR_REJECTS = ${JSON.stringify(rejectsData).replace(/</g, '\\u003c')};
+
+const linkKey = (type, a, b) => type + '|' + [a, b].sort().join('~');
 
 const acceptedMap = new Map(PRIOR_ACCEPTED.map((a) => [a.id, a]));
-const rejectedSet = new Set(PRIOR_REJECTS);
+// ids the vetter skipped (passed over — that exact puzzle just won't be re-emitted).
+const skippedSet = new Set(PRIOR_REJECTS.skips ?? PRIOR_REJECTS.ids ?? []);
+// linkKey -> {type, words:[a,b]} for every banned clue.
+const bannedLinks = new Map();
+for (const l of PRIOR_REJECTS.links ?? []) bannedLinks.set(linkKey(l.type, l.words[0], l.words[1]), { type: l.type, words: [...l.words].sort() });
 const list = document.getElementById('list');
 const status = document.getElementById('status');
 const hideAccepted = document.getElementById('hideAccepted');
@@ -754,42 +943,68 @@ for (const p of DATA) {
   meta.textContent = p.diff + ' · ' + p.shape + ' · ' + p.score + ' · ' + p.id;
   const chain = document.createElement('div');
   chain.className = 'chain';
-  for (const line of p.lines) {
-    const d = document.createElement('div');
+  // p.lines is index-aligned with p.puzzle.links (both come from the same map), so line i
+  // describes link i — that lets each rendered clue carry its own ban toggle.
+  const slotText = new Map(p.puzzle.words.map((w) => [w.id, w.text]));
+  p.lines.forEach((line, i) => {
+    const lk = p.puzzle.links[i];
+    const key = linkKey(lk.type, slotText.get(lk.from), slotText.get(lk.to));
+    const row = document.createElement('div');
+    row.className = 'linkrow';
+    const d = document.createElement('span');
+    d.className = 'chainline';
     d.innerHTML = line
       .replace(/&/g, '&amp;').replace(/</g, '&lt;')
       .replace(/\\[([A-Z]+)\\]/g, '<b>[$1]</b>');
-    chain.appendChild(d);
-  }
+    const banBtn = document.createElement('button');
+    banBtn.className = 'ban-link';
+    banBtn.title = 'Veto every future puzzle that uses this exact clue';
+    const refreshBan = () => {
+      const on = bannedLinks.has(key);
+      banBtn.classList.toggle('on', on);
+      banBtn.textContent = on ? 'banned' : 'ban';
+      row.classList.toggle('link-banned', on);
+    };
+    banBtn.onclick = () => {
+      if (bannedLinks.has(key)) bannedLinks.delete(key);
+      else bannedLinks.set(key, { type: lk.type, words: [slotText.get(lk.from), slotText.get(lk.to)].sort() });
+      refreshBan();
+      update();
+    };
+    refreshBan();
+    row.append(d, banBtn);
+    chain.appendChild(row);
+  });
   const acceptBtn = document.createElement('button');
   acceptBtn.className = 'accept-btn';
-  const rejectBtn = document.createElement('button');
-  rejectBtn.className = 'reject-btn';
+  const skipBtn = document.createElement('button');
+  skipBtn.className = 'skip-btn';
+  skipBtn.title = 'Pass on this exact puzzle (too easy/boring) — it just won\\'t reappear';
   const refresh = () => {
     const isAccepted = acceptedMap.has(p.id);
-    const isRejected = rejectedSet.has(p.id);
+    const isSkipped = skippedSet.has(p.id);
     card.classList.toggle('accepted', isAccepted);
-    card.classList.toggle('rejected', isRejected);
+    card.classList.toggle('skipped', isSkipped);
     acceptBtn.classList.toggle('on', isAccepted);
-    rejectBtn.classList.toggle('on', isRejected);
+    skipBtn.classList.toggle('on', isSkipped);
     acceptBtn.textContent = isAccepted ? 'accepted' : 'accept';
-    rejectBtn.textContent = isRejected ? 'rejected' : 'reject';
+    skipBtn.textContent = isSkipped ? 'skipped' : 'skip';
     card.style.display = hideAccepted.checked && isAccepted ? 'none' : '';
   };
   acceptBtn.onclick = () => {
     if (acceptedMap.has(p.id)) acceptedMap.delete(p.id);
     else {
       acceptedMap.set(p.id, { id: p.id, diff: p.diff, score: p.score, puzzle: p.puzzle });
-      rejectedSet.delete(p.id); // accepting overrides a prior reject
+      skippedSet.delete(p.id); // accepting overrides a prior skip
     }
     refresh();
     update();
   };
-  rejectBtn.onclick = () => {
-    if (rejectedSet.has(p.id)) rejectedSet.delete(p.id);
+  skipBtn.onclick = () => {
+    if (skippedSet.has(p.id)) skippedSet.delete(p.id);
     else {
-      rejectedSet.add(p.id);
-      acceptedMap.delete(p.id); // rejecting evicts it from the stockpile
+      skippedSet.add(p.id);
+      acceptedMap.delete(p.id); // skipping evicts it from the stockpile
     }
     refresh();
     update();
@@ -805,7 +1020,7 @@ for (const p of DATA) {
   };
   const btns = document.createElement('div');
   btns.className = 'btns';
-  btns.append(previewBtn, acceptBtn, rejectBtn);
+  btns.append(previewBtn, acceptBtn, skipBtn);
   card.append(meta, chain, btns);
   list.appendChild(card);
   refresh();
@@ -813,7 +1028,8 @@ for (const p of DATA) {
 function update() {
   status.textContent =
     acceptedMap.size + ' accepted (of ' + PRIOR_ACCEPTED.length + ' prior) · ' +
-    rejectedSet.size + ' rejected (of ' + PRIOR_REJECTS.length + ' prior)';
+    skippedSet.size + ' skipped · ' +
+    bannedLinks.size + ' banned link(s)';
 }
 hideAccepted.onchange = () => {
   for (const card of list.querySelectorAll('.card')) {
@@ -833,11 +1049,14 @@ document.getElementById('copyAccepted').onclick = async () => {
   setTimeout(() => (b.textContent = old), 1500);
 };
 document.getElementById('copyRejected').onclick = async () => {
-  const all = [...rejectedSet].sort();
-  await navigator.clipboard.writeText(JSON.stringify(all, null, 2) + '\\n');
+  const out = {
+    skips: [...skippedSet].sort(),
+    links: [...bannedLinks.values()],
+  };
+  await navigator.clipboard.writeText(JSON.stringify(out, null, 2) + '\\n');
   const b = document.getElementById('copyRejected');
   const old = b.textContent;
-  b.textContent = 'Copied ' + all.length + ' ✓';
+  b.textContent = 'Copied ' + out.skips.length + 's/' + out.links.length + 'b ✓';
   setTimeout(() => (b.textContent = old), 1500);
 };
 update();

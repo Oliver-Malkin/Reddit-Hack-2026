@@ -186,7 +186,10 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
     );
     this.tileScale = scale;
     for (const t of this.tileList) t.setBaseScale(scale);
-    for (const c of this.chains) c.setLayoutScale(scale);
+    for (const c of this.chains) {
+      c.setLayoutScale(scale);
+      c.setBottomLimit(playBottom);
+    }
 
     const spots: Record<string, { fx: number; y: number }> = portrait
       ? {

@@ -1,7 +1,8 @@
 /**
  * Minimal WordNet 3.0 database parser, reading the dict files shipped by the
  * `wordnet-db` npm package. Produces:
- *  - synsets: Map<"<file>#<offset>", { words: string[], pointers: {sym, key, st}[] }>
+ *  - synsets: Map<"<file>#<offset>", { words: string[], pointers: {sym, key, st}[], gloss, lexno }>
+ *             lexno = WordNet lexicographer file id (noun.animal=05, noun.food=13, …)
  *  - senses:  Map<"<lemma>|<file>", string[]>  — synset keys ordered most-frequent-first
  *             (WordNet index files list a lemma's synsets by sense frequency).
  */
@@ -52,6 +53,7 @@ export function loadWordNet() {
       const [head, gloss = ''] = line.split(' | ');
       const t = head.trim().split(/\s+/);
       const offset = t[0];
+      const lexno = parseInt(t[1], 10); // lexicographer file id (noun.animal=05, noun.food=13, …)
       const wCnt = parseInt(t[3], 16); // word count is 2-digit hex
       let i = 4;
       const words = [];
@@ -66,7 +68,7 @@ export function loadWordNet() {
           st: t[i + 3], // 4 hex digits: source|target word numbers (0000 = synset-to-synset)
         });
       }
-      synsets.set(`${file}#${offset}`, { words, pointers, gloss });
+      synsets.set(`${file}#${offset}`, { words, pointers, gloss, lexno });
     }
 
     const idxText = readFileSync(join(DICT_DIR, `index.${file}`), 'utf8');

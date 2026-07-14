@@ -115,10 +115,15 @@ export type LayoutOpts = {
 
 /** Clear space we try to keep between two tile boxes (on top of their half-extents). */
 const SEP_GAP = 26;
-/** Edge-gap band a linked pair is sprung toward: closer than MIN and the chain can't render
- *  (its shapes fade), further than MAX and the rope runs across the whole board. */
-const LINK_MIN = 66;
-const LINK_MAX = 172;
+/** Edge-gap band a linked pair is sprung toward, plus a REST target they settle onto inside it.
+ *  The numbers are tied to the chain's opacity ramp: the rope arc ≈ edge-gap − 28 (each end
+ *  attaches TILE_GAP≈14 outside its tile), and the label chip only reaches full opacity at
+ *  arc ≈ 105 (see Chain.update). So a pair must rest well past that — REST≈155 gives arc≈127,
+ *  a solidly-lit label — and even the MIN floor (arc≈102) stays only a hair below full. Without
+ *  the REST pull the band was "dead" (no force inside it), letting pairs rest at the fade knee. */
+const LINK_MIN = 130;
+const LINK_REST = 155;
+const LINK_MAX = 215;
 const ITERS = 260;
 /** Pull toward the play-band centre — enough to float the cluster off the edges, weak enough
  *  that the link springs can still spread the tiles out to use the vertical space. */
@@ -282,6 +287,10 @@ export function graphLayout(
       let pull = 0;
       if (gap > LINK_MAX) pull = (gap - LINK_MAX) * 0.5;
       else if (gap < LINK_MIN) pull = (gap - LINK_MIN) * 0.5; // negative → push apart
+      // Inside the band, a gentle pull toward REST so pairs seat at a label-legible distance
+      // instead of drifting to the close edge and resting half-faded. Soft (0.08) so a hub with
+      // several links can still compromise between them.
+      else pull = (gap - LINK_REST) * 0.08;
       const fx = (dx / dist) * pull;
       const fy = (dy / dist) * pull;
       dispX[i] += fx;
