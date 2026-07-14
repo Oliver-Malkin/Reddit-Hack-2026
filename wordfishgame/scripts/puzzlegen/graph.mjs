@@ -324,9 +324,30 @@ export function buildGraph({ wn, vocabRank, vLex, cmu, sequencePairs, topSenses 
   // solvers read the up-word cold, with no context to disambiguate a weak-plurality sense.
   const MIN_HYPERNYM_TAG = 2; // kills zero/near-zero-evidence nouns (e.g. "using")
   const MIN_UP_DOMINANCE_SHARE = 0.45; // up-word's matched sense vs. its OWN total usage
+  // WordNet groups every noun sense into a "lexicographer file" by broad semantic class.
+  // Hypernym clues only read as obvious ("a ROSE is a FLOWER") when BOTH words sit in a
+  // CONCRETE class — a tangible kind of thing. The abstract classes (communication,
+  // cognition, act, attribute, state, relation, …) are where WordNet's technically-correct
+  // -but-ridiculous categories live (TERM→WORD, CONCEPT→VALUE, BUYING→PURCHASE, CONTROL→
+  // POWER). noun.person is excluded too: its categories are either generic (AUTHOR→PERSON,
+  // ADULT→TEACHER) or occupational jargon, never a crisp "kind of". Gating strict hypernym
+  // edges to these files structurally removes that whole class of bad clue. The LIBERAL
+  // hypernym graph below is deliberately NOT gated — a solver might well think of an
+  // abstract category, so uniqueness checking must still see them.
+  const CONCRETE_NOUN_LEXNOS = new Set([
+    5,  // noun.animal
+    6,  // noun.artifact
+    8,  // noun.body
+    13, // noun.food
+    17, // noun.object (natural objects: rock, star, hill…)
+    20, // noun.plant
+    27, // noun.substance
+  ]);
+  const isConcreteSynset = (k) => CONCRETE_NOUN_LEXNOS.has(synsets.get(k)?.lexno);
   const hypernymCandidates = [];
   for (const [key, s] of synsets) {
     if (!key.startsWith('noun#') || strictExcluded.has(key)) continue;
+    if (!isConcreteSynset(key)) continue; // hyponym must itself be a concrete kind of thing
     // GENERIC_HYPERNYMS is excluded on the down side too, not just up — a word being a
     // bad, uninformative *category* has nothing to do with which side of the clue it sits
     // on. ("wise" as a down-word slipped through the tag-count floor purely because ALL
@@ -349,6 +370,9 @@ export function buildGraph({ wn, vocabRank, vLex, cmu, sequencePairs, topSenses 
       for (const p of parentsStrict.get(k) ?? []) {
         if (seen.has(p)) continue;
         seen.add(p);
+        // An abstract ancestor is never a good category, and everything above it is only
+        // more abstract — so stop this branch rather than climbing past it.
+        if (!isConcreteSynset(p)) continue;
         const rawUps = strictExcluded.has(p) ? [] : vocabWords(p).filter((w) => isTop1(w, p) && posOk(w, p));
         const ups = rawUps.filter((w) => {
           if (GENERIC_HYPERNYMS.has(w)) return false;

@@ -22,7 +22,8 @@ export const publishDailyPost = async (): Promise<Post> => {
   const previousId = await getCurrentDailyPostId();
 
   const post = await reddit.submitCustomPost({
-    title: `WordFish — daily puzzle for ${utcDayLabel(day)}`,
+    title: `WordFish daily: ${utcDayLabel(day)}`,
+    styles: shareImageUrl ? { shareImageUrl } : undefined,
   });
 
   await setDailyDay(post.id, day);

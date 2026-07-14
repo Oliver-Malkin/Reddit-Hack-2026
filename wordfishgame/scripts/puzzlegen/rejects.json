@@ -1,116 +1,256 @@
-[
-  "10itoxr",
-  "10u0gk9",
-  "10vluhv",
-  "113rseh",
-  "12hktcw",
-  "12qq4",
-  "12qvrp8",
-  "136spyy",
-  "137ee0j",
-  "13htjnw",
-  "13kzg4w",
-  "14g50sa",
-  "14mulr9",
-  "14nln5h",
-  "14trbos",
-  "15u6kdj",
-  "16zjrsn",
-  "17wp9bi",
-  "18b7d3m",
-  "19hi3gr",
-  "1ajham4",
-  "1b2ure8",
-  "1b62koa",
-  "1bm8f0x",
-  "1bzkx8h",
-  "1c9mmr1",
-  "1db7kx9",
-  "1eu6bfa",
-  "1eyt9wo",
-  "1fmdv6h",
-  "1fmhpxr",
-  "1foh9pr",
-  "1g6pssq",
-  "1hien8x",
-  "1hzlxgw",
-  "1i2t67t",
-  "1i9llmh",
-  "1ixo0oy",
-  "1j79lrw",
-  "1jjz2kc",
-  "1mpzsp4",
-  "1myb1yg",
-  "1nyob5f",
-  "1o6wal6",
-  "1p5f7pj",
-  "1q13nar",
-  "1qemop2",
-  "1qqeol7",
-  "1qvodfa",
-  "1r2olvs",
-  "1t48f3f",
-  "1u5hpz0",
-  "1usv5x7",
-  "1vhfx1h",
-  "1w9oyvp",
-  "1xtx6fh",
-  "1xys56c",
-  "1yngu7n",
-  "23yz7f",
-  "2q4vf5",
-  "40n4oc",
-  "47eods",
-  "4k04p0",
-  "4zm7uq",
-  "551rzg",
-  "69t2sh",
-  "6g1mjh",
-  "6s3pjo",
-  "7fxy57",
-  "7i9czg",
-  "8hcqqw",
-  "8qtx18",
-  "9jjfbu",
-  "a9vxxy",
-  "aa9ws5",
-  "axwvs",
-  "c2qdm",
-  "c3g79r",
-  "dl1fy4",
-  "dq74u1",
-  "e89vjm",
-  "f651py",
-  "f6clk",
-  "feclvc",
-  "fg1fud",
-  "he20j8",
-  "iegj23",
-  "jhsv6n",
-  "jlmd0j",
-  "kifayk",
-  "kqkumw",
-  "krl778",
-  "l0h5yk",
-  "l70pm4",
-  "lhucl3",
-  "m1p0hv",
-  "n5bgfs",
-  "nn4vz4",
-  "oagr5d",
-  "odxtux",
-  "ofntr5",
-  "opjbgx",
-  "r1oadp",
-  "rw6zrq",
-  "s11zpg",
-  "s5am6c",
-  "s8qx5z",
-  "shad9a",
-  "sphn7e",
-  "stbw8n",
-  "u4ogab",
-  "vks43n",
-  "x2uh28",
-  "z3g39z"
-]
+{
+  "skips": [
+    "10itoxr",
+    "12hktcw",
+    "12qvrp8",
+    "13w6728",
+    "17wp9bi",
+    "1hybxsh",
+    "1o4fsir",
+    "1twqfps",
+    "1xbzrxj",
+    "4zm7uq",
+    "84afw4",
+    "ctc0o2",
+    "e89vjm",
+    "kgyu67",
+    "mtwaiq",
+    "nrwoct",
+    "oagr5d",
+    "s3oyrw",
+    "zkyuk1"
+  ],
+  "links": [
+    {
+      "type": "hypernym",
+      "words": [
+        "CHAIN",
+        "SERIES"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "PROGRAM",
+        "STRATEGY"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "FACULTY",
+        "FOCUS"
+      ]
+    },
+    {
+      "type": "sequence",
+      "words": [
+        "DOUBLE",
+        "SINGLE"
+      ]
+    },
+    {
+      "type": "sequence",
+      "words": [
+        "PROBLEM",
+        "SOLUTION"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "CONTROL",
+        "POWER"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "ADULT",
+        "TEACHER"
+      ]
+    },
+    {
+      "type": "meronym",
+      "words": [
+        "INCH",
+        "MESH"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "AREA",
+        "CORNER"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "DEMAND",
+        "REQUEST"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "CUSTOM",
+        "PRACTICE"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "ARTS",
+        "PLAYING"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "TERM",
+        "WORD"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "CONCEPT",
+        "VALUE"
+      ]
+    },
+    {
+      "type": "meronym",
+      "words": [
+        "SAT",
+        "WEEKEND"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "AUTHOR",
+        "PERSON"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "DIET",
+        "FOOD"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "SCREEN",
+        "SURFACE"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "BUYING",
+        "PURCHASE"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "INVENTORY",
+        "LIST"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "SELECTION",
+        "VOTE"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "CHOICE",
+        "FAVORITE"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "EXTREME",
+        "LEVEL"
+      ]
+    },
+    {
+      "type": "synonym",
+      "words": [
+        "FIRM",
+        "HOUSE"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "FRENCH",
+        "LATIN"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "LOG",
+        "WOOD"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "PLATFORM",
+        "SURFACE"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "AGENT",
+        "VIRUS"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "HORSE",
+        "MOUNT"
+      ]
+    },
+    {
+      "type": "synonym",
+      "words": [
+        "MEASURE",
+        "STEP"
+      ]
+    },
+    {
+      "type": "hypernym",
+      "words": [
+        "FRUIT",
+        "SEED"
+      ]
+    },
+    {
+      "type": "meronym",
+      "words": [
+        "ITEM",
+        "LISTING"
+      ]
+    },
+    {
+      "type": "meronym",
+      "words": [
+        "CURE",
+        "TREATMENT"
+      ]
+    }
+  ]
+}

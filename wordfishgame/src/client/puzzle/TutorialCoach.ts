@@ -23,6 +23,9 @@ export type CoachStep = {
    *  pin it to that edge instead — used for the free-play step so the bubble is out of the
    *  middle of the board and the player is nudged to actually poke around. */
   placement?: 'auto' | 'top' | 'bottom';
+  /** Show a minimise control that collapses the bubble to a small "tip" handle, so the player
+   *  can get it fully out of the way while they play. Used on the free-play/solve step. */
+  minimizable?: boolean;
 };
 
 const MARGIN = 16;
@@ -54,6 +57,9 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
   // Uniform scale applied to the whole bubble so it shrinks on small viewports instead of
   // hogging the board (set per show() from the canvas size).
   private bubbleScale = 1;
+  // Collapsed state: the bubble is tucked away and a small "tip" handle is shown instead.
+  private minimized = false;
+  private handle: Phaser.GameObjects.Container | null = null;
 
   constructor(scene: Phaser.Scene) {
     super(scene, 0, 0);
@@ -75,6 +81,11 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
     this.targetFn = step.target ?? null;
     this.dimmed = step.dim !== false;
     this.placement = step.placement ?? 'auto';
+
+    // A new step always arrives expanded — clear any leftover collapsed handle.
+    this.minimized = false;
+    this.handle?.destroy();
+    this.handle = null;
 
     this.bubble?.destroy();
     const bubble = this.buildBubble(step);
@@ -110,9 +121,89 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
     }
   }
 
+  /** Collapse the bubble to a small "SHOW TIP" handle at the top of the screen and drop the
+   *  dim, so the board is completely the player's while they experiment. */
+  private minimize() {
+    if (!this.bubble || this.minimized) return;
+    this.minimized = true;
+    const b = this.bubble;
+    this.scene.tweens.add({
+      targets: b,
+      alpha: 0,
+      scaleX: this.bubbleScale * 0.85,
+      scaleY: this.bubbleScale * 0.85,
+      duration: 160,
+      ease: 'Quad.easeIn',
+      onComplete: () => b.setVisible(false),
+    });
+    this.refreshSpotlight(); // clears the dim + ring while collapsed
+    this.showHandle();
+  }
+
+  /** Bring the collapsed bubble back and restore its spotlight. */
+  private restore() {
+    if (!this.bubble) return;
+    this.minimized = false;
+    this.handle?.destroy();
+    this.handle = null;
+    const b = this.bubble;
+    b.setVisible(true).setAlpha(0).setScale(this.bubbleScale * 0.9);
+    this.scene.tweens.add({
+      targets: b,
+      alpha: 1,
+      scaleX: this.bubbleScale,
+      scaleY: this.bubbleScale,
+      duration: 220,
+      ease: 'Back.easeOut',
+    });
+    this.refreshSpotlight();
+  }
+
+  /** The small pill shown while minimised — tap it to bring the tip back. */
+  private showHandle() {
+    this.handle?.destroy();
+    const scene = this.scene;
+    const label = scene.add.text(0, 0, 'SHOW TIP', {
+      fontFamily: UI_FONT,
+      fontSize: '13px',
+      fontStyle: '900',
+      color: '#1c1c1c',
+    });
+    label.setOrigin(0.5);
+    const w = label.width + 28;
+    const h = 30;
+    const g = scene.add.graphics();
+    g.fillStyle(PALETTE.ink, 0.2);
+    g.fillRoundedRect(-w / 2 + 2, -h / 2 + 3, w, h, h / 2);
+    g.fillStyle(PALETTE.yellow, 1);
+    g.fillRoundedRect(-w / 2, -h / 2, w, h, h / 2);
+    g.lineStyle(3, PALETTE.ink, 1);
+    g.strokeRoundedRect(-w / 2, -h / 2, w, h, h / 2);
+    const c = scene.add.container(0, 0, [g, label]);
+    c.setSize(w, h);
+    c.setInteractive({
+      hitArea: new Phaser.Geom.Rectangle(0, 0, w, h),
+      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+      useHandCursor: true,
+    });
+    c.on('pointerdown', () => this.restore());
+    // Parked at the top edge, centred — clear of the corner controls and the play area below.
+    c.setPosition(scene.scale.width / 2, MARGIN + h / 2 + 4);
+    c.setScale(this.bubbleScale).setAlpha(0);
+    this.add(c);
+    this.handle = c;
+    scene.tweens.add({ targets: c, alpha: 1, duration: 180 });
+  }
+
   /** Redraw the dim + ring from the current target. Call every frame so the highlight
    *  follows a tile being dragged (or a chain label drifting along its rope). */
   refreshSpotlight() {
+    // Collapsed: no dim, no ring — the board is entirely the player's while the tip is tucked.
+    if (this.minimized) {
+      this.scrimG.clear();
+      this.ringG.clear();
+      return;
+    }
     const W = this.scene.scale.width;
     const H = this.scene.scale.height;
     const t = this.targetFn ? this.targetFn() : null;
@@ -173,7 +264,10 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
     const scene = this.scene;
     const c = scene.add.container(0, 0);
     const cardW = Math.min(MAX_W, scene.scale.width - MARGIN * 2);
-    const innerW = cardW - PAD * 2;
+    // A minimizable step keeps its top-right corner clear for the collapse disc, so the text
+    // column is a touch narrower there.
+    const miniInset = step.minimizable ? 30 : 0;
+    const innerW = cardW - PAD * 2 - miniInset;
 
     const text = scene.add.text(-cardW / 2 + PAD, 0, step.text, {
       fontFamily: UI_FONT,
@@ -225,6 +319,29 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
     if (skip) {
       skip.c.setPosition(-cardW / 2 + PAD + skip.w / 2, rowY);
       c.add(skip.c);
+    }
+
+    // Minimise disc in the top-right corner (matches the win card's close button), collapsing
+    // the bubble to a small handle so it's fully out of the way while the player experiments.
+    if (step.minimizable) {
+      const mx = cardW / 2 - 20;
+      const my = -cardH / 2 + 20;
+      const disc = scene.add.graphics();
+      disc.fillStyle(0xffffff, 1);
+      disc.fillCircle(mx, my, 13);
+      disc.lineStyle(3, PALETTE.ink, 1);
+      disc.strokeCircle(mx, my, 13);
+      disc.lineBetween(mx - 5, my, mx + 5, my); // the "–" (minimise)
+      c.add(disc);
+      const hit = scene.add.container(mx, my);
+      hit.setSize(34, 34);
+      hit.setInteractive({
+        hitArea: new Phaser.Geom.Rectangle(0, 0, 34, 34),
+        hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+        useHandCursor: true,
+      });
+      hit.on('pointerdown', () => this.minimize());
+      c.add(hit);
     }
 
     // The whole card is a drag handle (so a tile can never get stuck under it), while the

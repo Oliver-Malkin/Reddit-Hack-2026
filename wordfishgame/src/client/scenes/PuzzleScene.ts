@@ -407,7 +407,10 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
       this.tileList.map((t) => t.boxWidth)
     );
     for (const t of this.tileList) t.setBaseScale(this.tileScale);
-    for (const c of this.chains) c.setLayoutScale(this.tileScale);
+    for (const c of this.chains) {
+      c.setLayoutScale(this.tileScale);
+      c.setBottomLimit(this.playBottom);
+    }
   }
 
   /** Clamp a desired centre so the (scaled) tile stays fully on canvas / in the play band. */
@@ -602,6 +605,7 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
         const popup = new WinPopup(this, cx, cy, {
           answers,
           onShare: () => this.shareResult(),
+          onHome: () => this.returnToMenu(),
         });
         popup.once(Phaser.GameObjects.Events.DESTROY, () => {
           if (this.winPopup === popup) this.winPopup = null;
