@@ -12,7 +12,11 @@ const PANEL_W = 320;
 const BASE_PANEL_H = 208;
 const RADIUS = 16;
 const BORDER = 6;
-const BTN_W = 182;
+// The action row is SHARE (primary) beside a HOME button back to the menu; they sit centred
+// as a pair within the panel.
+const SHARE_W = 176;
+const HOME_W = 88;
+const BTN_GAP = 10;
 const BTN_H = 44;
 const SUBTITLE_INSET = 28; // clear margin each side so wrapped text never touches the border
 
@@ -28,6 +32,8 @@ export type WinPopupOptions = {
   answers: string[];
   /** Called on share click; resolve true if the share text reached the clipboard. */
   onShare: () => Promise<boolean>;
+  /** Called on the HOME button — return to the main menu (the × just closes the card). */
+  onHome: () => void;
 };
 
 /**
@@ -41,6 +47,8 @@ export class WinPopup extends Phaser.GameObjects.Container {
   private panelH = BASE_PANEL_H;
   private btnLabel: Phaser.GameObjects.Text;
   private btnBg: Phaser.GameObjects.Graphics;
+  /** Centre x of the SHARE pill — drawButton redraws it here on copy feedback. */
+  private shareCX = 0;
   private shareBusy = false;
   // Once destroyed, the deferred share callbacks (the clipboard promise and the button
   // revert tween) must not touch the now-dead graphics — that used to throw and freeze the
@@ -125,13 +133,18 @@ export class WinPopup extends Phaser.GameObjects.Container {
 
     this.add(subtitle);
 
-    // Share button — yellow pill, ink border, its own offset shadow.
+    // Action row: SHARE (primary yellow pill) beside a HOME button back to the menu, centred
+    // as a pair. Each has its own offset shadow and an invisible top-left-origin hit zone.
     const btnY = panelH / 2 - 50;
+    const groupW = SHARE_W + BTN_GAP + HOME_W;
+    const shareCX = (this.shareCX = -groupW / 2 + SHARE_W / 2);
+    const homeCX = groupW / 2 - HOME_W / 2;
+
     this.btnBg = scene.add.graphics();
     this.drawButton(PALETTE.yellow);
     this.add(this.btnBg);
 
-    this.btnLabel = scene.add.text(0, btnY, 'SHARE RESULT', {
+    this.btnLabel = scene.add.text(shareCX, btnY, 'SHARE', {
       fontFamily: UI_FONT,
       fontSize: '16px',
       fontStyle: '900',
@@ -140,11 +153,10 @@ export class WinPopup extends Phaser.GameObjects.Container {
     this.btnLabel.setOrigin(0.5);
     this.add(this.btnLabel);
 
-    // Invisible hit zone over the button (containers hit-test from their top-left).
-    const hit = scene.add.container(0, btnY);
-    hit.setSize(BTN_W, BTN_H);
+    const hit = scene.add.container(shareCX, btnY);
+    hit.setSize(SHARE_W, BTN_H);
     hit.setInteractive({
-      hitArea: new Phaser.Geom.Rectangle(0, 0, BTN_W, BTN_H),
+      hitArea: new Phaser.Geom.Rectangle(0, 0, SHARE_W, BTN_H),
       hitAreaCallback: Phaser.Geom.Rectangle.Contains,
       useHandCursor: true,
     });
@@ -164,13 +176,46 @@ export class WinPopup extends Phaser.GameObjects.Container {
           onComplete: () => {
             if (this.killed) return; // closed mid-wait — don't touch destroyed graphics
             this.drawButton(PALETTE.yellow);
-            this.btnLabel.setText('SHARE RESULT').setColor('#1c1c1c');
+            this.btnLabel.setText('SHARE').setColor('#1c1c1c');
             this.shareBusy = false;
           },
         });
       });
     });
     this.add(hit);
+
+    // HOME — white pill, static; an easy one-tap back to the main menu (rather than hunting
+    // for the corner home button behind the celebration).
+    const homeBg = scene.add.graphics();
+    homeBg.fillStyle(PALETTE.ink, 0.25);
+    homeBg.fillRoundedRect(homeCX - HOME_W / 2 + 4, btnY - BTN_H / 2 + 5, HOME_W, BTN_H, BTN_H / 2);
+    homeBg.fillStyle(0xffffff, 1);
+    homeBg.fillRoundedRect(homeCX - HOME_W / 2, btnY - BTN_H / 2, HOME_W, BTN_H, BTN_H / 2);
+    homeBg.lineStyle(4, PALETTE.ink, 1);
+    homeBg.strokeRoundedRect(homeCX - HOME_W / 2, btnY - BTN_H / 2, HOME_W, BTN_H, BTN_H / 2);
+    this.add(homeBg);
+
+    const homeLabel = scene.add.text(homeCX, btnY, 'HOME', {
+      fontFamily: UI_FONT,
+      fontSize: '16px',
+      fontStyle: '900',
+      color: '#1c1c1c',
+    });
+    homeLabel.setOrigin(0.5);
+    this.add(homeLabel);
+
+    const homeHit = scene.add.container(homeCX, btnY);
+    homeHit.setSize(HOME_W, BTN_H);
+    homeHit.setInteractive({
+      hitArea: new Phaser.Geom.Rectangle(0, 0, HOME_W, BTN_H),
+      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+      useHandCursor: true,
+    });
+    homeHit.on('pointerdown', () => {
+      this.disableInteractive();
+      options.onHome();
+    });
+    this.add(homeHit);
 
     // Close button — white disc with an ink "×" in the top-right corner.
     const cx = PANEL_W / 2 - 22;
@@ -250,13 +295,14 @@ export class WinPopup extends Phaser.GameObjects.Container {
 
   private drawButton(fill: number) {
     const btnY = this.panelH / 2 - 50;
+    const cx = this.shareCX;
     const g = this.btnBg;
     g.clear();
     g.fillStyle(PALETTE.ink, 0.25);
-    g.fillRoundedRect(-BTN_W / 2 + 4, btnY - BTN_H / 2 + 5, BTN_W, BTN_H, BTN_H / 2);
+    g.fillRoundedRect(cx - SHARE_W / 2 + 4, btnY - BTN_H / 2 + 5, SHARE_W, BTN_H, BTN_H / 2);
     g.fillStyle(fill, 1);
-    g.fillRoundedRect(-BTN_W / 2, btnY - BTN_H / 2, BTN_W, BTN_H, BTN_H / 2);
+    g.fillRoundedRect(cx - SHARE_W / 2, btnY - BTN_H / 2, SHARE_W, BTN_H, BTN_H / 2);
     g.lineStyle(4, PALETTE.ink, 1);
-    g.strokeRoundedRect(-BTN_W / 2, btnY - BTN_H / 2, BTN_W, BTN_H, BTN_H / 2);
+    g.strokeRoundedRect(cx - SHARE_W / 2, btnY - BTN_H / 2, SHARE_W, BTN_H, BTN_H / 2);
   }
 }

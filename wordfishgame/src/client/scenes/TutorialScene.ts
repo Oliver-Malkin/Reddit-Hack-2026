@@ -23,7 +23,7 @@ const LAYOUT_MARGIN = 12;
  *  (a cheerful mood, opposite-of-sad, five letters) — HAPPY is what the tutorial expects,
  *  the rest are an easter egg the coach ribs you for. */
 const ANSWER = 'HAPPY';
-const ALSO_ACCEPTED = ['MERRY', 'JOLLY', 'PERKY', 'SUNNY'];
+const ALSO_ACCEPTED = ['MERRY', 'JOLLY', 'PERKY', 'SUNNY', 'BLISS'];
 
 /** The scripted steps, in order. Copy + targets are built in coachStepFor(). */
 const STEP_KEYS = ['intro', 'hidden', 'tile', 'antonym', 'isa', 'controls', 'solve', 'done'] as const;
@@ -367,7 +367,11 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
     const total = STEP_KEYS.length;
     const index = STEP_KEYS.indexOf(key) + 1;
     const progress = { index, total };
-    const skip = { label: 'SKIP', onTap: () => this.skipToEnd() };
+    // SKIP on a guided step jumps to the free-play "solve" stage (dim off, board yours) rather
+    // than straight to the wrap-up — so skipping still lets you actually try the puzzle. From
+    // the solve stage itself, SKIP (skipEnd) bails to the wrap-up.
+    const skip = { label: 'SKIP', onTap: () => this.jumpToPlay() };
+    const skipEnd = { label: 'SKIP', onTap: () => this.skipToEnd() };
     const back = { label: 'BACK', onTap: () => this.showStep(this.stepIndex - 1) };
     const next = { label: 'NEXT', primary: true, onTap: () => this.showStep(this.stepIndex + 1) };
 
@@ -418,12 +422,13 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
       case 'solve':
         return {
           // Letters/?s were covered back in 'hidden' — just a quick recap of the clues here.
-          text: 'So, our hidden word is the opposite of SAD, a kind of EMOTION, and five letters long. Tap the tile and type your answer!',
+          text: 'So, our hidden word is the opposite of SAD, a kind of EMOTION, and five letters long. Tap the tile and type your answer!\n\nTuck this box away with the – button any time it is in your way.',
           target: () => this.tileRect('happy'),
           progress,
           dim: false, // let them explore the whole board freely
           placement: 'top', // out of the middle, so the open board invites poking around
-          buttons: [skip, back], // no Next; solving the word advances you
+          minimizable: true, // and let them get the box fully out of the way while they guess
+          buttons: [skipEnd, back], // no Next; solving the word advances you
         };
       case 'done':
       default:
@@ -470,6 +475,12 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
     const cx = (ta.x + tb.x) / 2;
     const cy = (ta.y + tb.y) / 2;
     return new Phaser.Geom.Rectangle(cx - 70, cy - 24, 140, 48);
+  }
+
+  /** Jump straight to the free-play "solve" stage — what SKIP does from a guided step, so
+   *  skipping the explanations still drops you into an unblocked board to try the puzzle. */
+  private jumpToPlay() {
+    this.showStep(STEP_KEYS.indexOf('solve'));
   }
 
   /** Skip ahead to the wrap-up instead of stepping through the rest. */

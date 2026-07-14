@@ -605,6 +605,7 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
         const popup = new WinPopup(this, cx, cy, {
           answers,
           onShare: () => this.shareResult(),
+          onHome: () => this.returnToMenu(),
         });
         popup.once(Phaser.GameObjects.Events.DESTROY, () => {
           if (this.winPopup === popup) this.winPopup = null;

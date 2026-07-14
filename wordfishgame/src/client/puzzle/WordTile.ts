@@ -9,7 +9,10 @@ export const CELL_H = 58;
 const RADIUS = 10;
 const BORDER = 5;
 const SHADOW_OFFSET = 6;
-const MOVE_THRESHOLD = 6; // px of pointer travel before a press becomes a drag
+// px of pointer travel before a press becomes a drag. A touch "tap" on a specific letter
+// almost always jitters a few pixels under the finger, so this is deliberately generous —
+// too tight and a tap meant to place the caret slips into a tiny drag and never focuses.
+const MOVE_THRESHOLD = 9;
 
 export type TileFxName = 'tap' | 'erase' | 'grab' | 'drop' | 'wrong' | 'win';
 
@@ -68,7 +71,12 @@ export class WordTile extends Phaser.GameObjects.Container {
   private focused = false;
   private caretBlink = 0;
   private blinkOn = false;
-  private announcedFull = false;
+  /** The last FULL guess we reacted to (buzzed as wrong). Feedback fires whenever the
+   *  completed word changes to a new wrong value — so editing a single letter of an
+   *  already-full word (the last one especially) still buzzes, instead of the old behaviour
+   *  that reacted only on the incomplete→complete transition and then went silent. Null
+   *  while the word is not full. */
+  private lastWrongGuess: string | null = null;
 
   // Layout scale for small canvases — every squish/pop tween is relative to this.
   private baseScale = 1;
@@ -166,6 +174,13 @@ export class WordTile extends Phaser.GameObjects.Container {
 
   get editable(): boolean {
     return this.isHidden && !this.solved;
+  }
+
+  /** How this word should read inside a chain's tooltip: the clue / solved answer once it's
+   *  known, or a run of "?" the same length while the word is still hidden — so explaining a
+   *  link never spoils an unsolved word. */
+  tooltipWord(): string {
+    return this.isHidden && !this.solved ? '?'.repeat(this.answer.length) : this.answer;
   }
 
   /** Layout scale for small canvases; the scene sets this whenever it re-flows. */
@@ -300,13 +315,17 @@ export class WordTile extends Phaser.GameObjects.Container {
   focus(localX: number) {
     if (!this.editable) return;
     this.focused = true;
-    // Caret lands on the tapped cell, but never past the first empty one — so a fresh
-    // tap on an empty word starts at cell 0, tapping ahead of your progress snaps back
-    // to where typing continues, and tapping a filled cell (or any cell once the word
-    // is full) lets you go straight there to fix it. No gaps, no surprises.
+    // Where the caret lands from a tap:
+    //  - a filled cell → straight there, so you can always go fix any letter you've typed
+    //    (even one sitting after a gap left by Delete);
+    //  - a full word → the tapped cell, wherever it is;
+    //  - otherwise → the tapped cell, but never past the first blank, so a fresh tap on an
+    //    empty word starts at cell 0 and tapping ahead of your progress snaps back to where
+    //    typing continues.
     const tapped = this.cellFromLocalX(localX);
     const firstEmpty = this.slots.findIndex((s) => s === '');
-    this.caretIndex = firstEmpty === -1 ? tapped : Math.min(tapped, firstEmpty);
+    this.caretIndex =
+      firstEmpty === -1 || this.slots[tapped] !== '' ? tapped : Math.min(tapped, firstEmpty);
     this.caretBlink = 0;
     this.blinkOn = true;
     this.renderCells();
@@ -372,18 +391,21 @@ export class WordTile extends Phaser.GameObjects.Container {
   private checkFull() {
     const full = this.slots.every((s) => s !== '');
     if (!full) {
-      this.announcedFull = false;
+      this.lastWrongGuess = null;
       return;
     }
     // A correct word always wins — even if the player fixed the last letter in place on
-    // an already-full guess (which never dips back to non-full). The wrong-answer buzz,
-    // by contrast, fires only once per fill so overwriting wrong→wrong doesn't spam it.
+    // an already-full guess (which never dips back to non-full). The wrong-answer buzz
+    // fires whenever the completed word becomes a NEW wrong value: filling the last blank,
+    // or editing a letter of an already-full word so it reads differently. Tracking the last
+    // buzzed guess (rather than a one-shot flag) means changing just the final letter of a
+    // full-but-wrong word gives feedback, while retyping the SAME wrong word doesn't spam.
     const guess = this.slots.join('');
     if (guess === this.answer || this.accept.includes(guess)) {
       this.solvedWith = guess;
       this.solve();
-    } else if (!this.announcedFull) {
-      this.announcedFull = true;
+    } else if (guess !== this.lastWrongGuess) {
+      this.lastWrongGuess = guess;
       this.flashWrong();
     }
   }

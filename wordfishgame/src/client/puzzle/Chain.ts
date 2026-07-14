@@ -42,6 +42,8 @@ const MIN_ROPE = 90;
 const CHIP_PAD = 6;
 /** Label chip height (its width varies with the text — see chipHalfW). */
 const CHIP_H = 26;
+/** How long a tapped-open relationship tooltip lingers before auto-dismissing (ms). */
+const TOOLTIP_PIN_MS = 4600;
 /** Perpendicular gap between sibling chains (same tile pair) fanned onto parallel lanes /
  *  nested loop rails — a touch wider than a rope's wobble so lanes read as distinct. */
 const LANE_SPACING = 30;
@@ -55,20 +57,26 @@ type Side = 'right' | 'left' | 'bottom' | 'top';
 type Box = { cx: number; cy: number; hx: number; hy: number };
 type Candidate = { key: string; pts: Phaser.Math.Vector2[] };
 
-/** Human-facing chip text — often clearer than the raw type name. */
+/** Human-facing chip text — often clearer than the raw type name. The four directed links
+ *  (see DIRECTED_LABEL) used to append a static "▸"; that is now a live compass arrow on the
+ *  chip that actually points from A toward B, so the direction reads off the label itself. */
 const CHIP_LABEL: Record<LinkType, string> = {
   synonym: 'SYNONYM',
   antonym: 'ANTONYM',
-  // The ▸ matches the other directional labels: it flags that the link HAS a direction,
-  // not which way it points (the tiles are draggable, so the brace shapes carry the
-  // actual heading). Without it, "IS A" was the only directional type reading as neutral.
-  hypernym: 'IS A ▸',
+  hypernym: 'IS A',
   anagram: 'ANAGRAM',
-  meronym: 'PART OF ▸',
-  lettersubset: 'LETTERS IN ▸',
-  sequence: 'BECOMES ▸',
+  meronym: 'PART OF',
+  lettersubset: 'LETTERS IN',
+  sequence: 'BECOMES',
   rhyme: 'RHYMES',
 };
+
+/** Link types whose LABEL carries a directed reading ("A is a B", "A becomes B"). These get a
+ *  compass arrow on the chip that swings to point from A toward B, and a directional tooltip.
+ *  The symmetric types (synonym/antonym/anagram/rhyme) read the same either way, so no arrow —
+ *  note this is NOT the same as DIRECTIONAL (which also includes rhyme, whose shapes merely
+ *  ride the chain heading for looks). */
+const DIRECTED_LABEL = new Set<LinkType>(['hypernym', 'meronym', 'lettersubset', 'sequence']);
 
 /** Types whose shapes carry a direction and so lock to the chain heading (apex → `to`). */
 const DIRECTIONAL = new Set<LinkType>([
@@ -104,6 +112,22 @@ export class Chain {
   private shapes: Phaser.GameObjects.Image[] = [];
   private baseScales: number[] = [];
   private chip: Phaser.GameObjects.Container;
+  /** Compass arrow on the chip (directed links only) — swings each frame to point at `to`. */
+  private chipArrow: Phaser.GameObjects.Graphics | null = null;
+  /** The relationship tooltip ("SNOW is a type of WEATHER"), lazily built on first reveal. */
+  private tooltip: Phaser.GameObjects.Container | null = null;
+  /** True while the tooltip is held open by a tap (vs. a transient desktop hover). */
+  private tooltipPinned = false;
+  /** Scene time (ms) at which an unpinned/tapped tooltip should auto-dismiss. */
+  private tooltipHideAt = 0;
+  /** Arc length of the last PICKED route — a stable basis for the fade alphas that, unlike the
+   *  drawn rope's instantaneous length, doesn't dip while the rope eases onto a new path (which
+   *  used to make labels blink out mid-reroute). */
+  private targetArc = SLACK_REF;
+  /** Smoothed chip/shape opacities, so any residual wobble in the fade basis reads as a gentle
+   *  settle rather than a flicker. */
+  private chipAlpha = 0;
+  private shapeAlpha = 0;
   private phases: number[] = [];
   private wobbleSpeeds: number[] = [];
   private amps: number[] = [];
@@ -129,6 +153,9 @@ export class Chain {
   private display: Phaser.Math.Vector2[] = [];
   private lastTime = 0;
   private chipHalfW = 40;
+  /** On-screen size of the tooltip bubble at scale 1 — for the on-canvas clamp. */
+  private tooltipW = 0;
+  private tooltipH = 0;
   /** Where along the curve the chip sits (0–1) — glides toward the clearest spot. */
   private chipU = 0.5;
   /** Uniform scale for the chip + shapes, driven by the layout so a cramped phone canvas gets
@@ -253,7 +280,12 @@ export class Chain {
   /** Tear down every GameObject this chain owns — used when a scene reloads its puzzle. */
   destroy() {
     for (const s of this.shapes) s.destroy();
-    this.chip.destroy(); // container destroys its graphics + label too
+    this.chip.destroy(); // container destroys its graphics + label + arrow too
+    if (this.tooltip) {
+      this.scene.tweens.killTweensOf(this.tooltip);
+      this.tooltip.destroy();
+      this.tooltip = null;
+    }
     this.shapes = [];
     this.peers = [];
     this.routePeers = [];
@@ -513,7 +545,9 @@ export class Chain {
   }
 
   private buildChip(): Phaser.GameObjects.Container {
-    const label = this.scene.add.text(0, 0, CHIP_LABEL[this.type], {
+    const scene = this.scene;
+    const directed = DIRECTED_LABEL.has(this.type);
+    const label = scene.add.text(0, 0, CHIP_LABEL[this.type], {
       fontFamily: UI_FONT,
       fontSize: '12px',
       fontStyle: '800',
@@ -521,10 +555,15 @@ export class Chain {
     });
     label.setOrigin(0.5);
 
-    const w = label.width + 24;
+    // Directed labels reserve a slot on the right for the compass arrow; the text nudges left
+    // so it stays centred within its own space.
+    const arrowSlot = directed ? 22 : 0;
+    const w = label.width + 24 + arrowSlot;
     const h = CHIP_H;
     this.chipHalfW = w / 2;
-    const g = this.scene.add.graphics();
+    label.setX(-arrowSlot / 2);
+
+    const g = scene.add.graphics();
     g.fillStyle(PALETTE.ink, 0.16); // offset shadow
     g.fillRoundedRect(-w / 2 + 3, -h / 2 + 4, w, h, h / 2);
     g.fillStyle(0xffffff, 1);
@@ -532,7 +571,165 @@ export class Chain {
     g.lineStyle(3, PALETTE.ink, 1);
     g.strokeRoundedRect(-w / 2, -h / 2, w, h, h / 2);
 
-    return this.scene.add.container(0, 0, [g, label]).setDepth(4);
+    const children: Phaser.GameObjects.GameObject[] = [g, label];
+    if (directed) {
+      // A little arrowhead + shaft, drawn pointing +x and centred on its own origin so it can
+      // spin freely; update() rotates it to aim from the chip toward `to`.
+      const arrow = scene.add.graphics();
+      arrow.fillStyle(PALETTE.ink, 1);
+      arrow.beginPath();
+      arrow.moveTo(5, 0);
+      arrow.lineTo(-3, -4.2);
+      arrow.lineTo(-3, 4.2);
+      arrow.closePath();
+      arrow.fillPath();
+      arrow.lineStyle(2, PALETTE.ink, 1);
+      arrow.lineBetween(-5.5, 0, -1.5, 0);
+      arrow.setPosition(w / 2 - 13, 0);
+      this.chipArrow = arrow;
+      children.push(arrow);
+    }
+
+    const c = scene.add.container(0, 0, children).setDepth(4);
+    // Tap the chip for a plain-language reading of the link ("SNOW is a type of WEATHER"),
+    // which resolves the directionality confusion the arrows alone can leave. Desktop also
+    // gets it on hover; a tap pins it (and closes any sibling's). Hit-area origin is the
+    // container's top-left once sized (same Phaser quirk as the word tiles).
+    c.setSize(w, h);
+    c.setInteractive({
+      hitArea: new Phaser.Geom.Rectangle(0, 0, w, h),
+      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+      useHandCursor: true,
+    });
+    c.on('pointerover', () => {
+      if (!this.tooltipPinned) this.showTooltip(false);
+    });
+    c.on('pointerout', () => {
+      if (!this.tooltipPinned) this.hideTooltip();
+    });
+    c.on('pointerdown', () => this.toggleTooltip());
+    return c;
+  }
+
+  // ----- relationship tooltip -----
+
+  /** A one-line, plain-English reading of the link, using the current words (a still-hidden
+   *  word reads as "????" so nothing is spoiled). Directional phrasings are written so A→B is
+   *  unambiguous however the tiles are dragged. */
+  private tooltipText(): string {
+    const A = this.tileA.tooltipWord();
+    const B = this.tileB.tooltipWord();
+    switch (this.type) {
+      case 'synonym':
+        return `${A} means the same as ${B}`;
+      case 'antonym':
+        return `${A} is the opposite of ${B}`;
+      case 'anagram':
+        return `${A} is an anagram of ${B}`;
+      case 'rhyme':
+        return `${A} rhymes with ${B}`;
+      case 'hypernym':
+        return `${B} is a type of ${A}`;
+      case 'meronym':
+        return `${A} is part of ${B}`;
+      case 'lettersubset':
+        return `the letters of ${A} appear inside ${B}`;
+      case 'sequence':
+        return `${A} becomes ${B}`;
+    }
+  }
+
+  private toggleTooltip() {
+    if (this.tooltipPinned && this.tooltip) {
+      this.tooltipPinned = false;
+      this.hideTooltip();
+    } else {
+      this.tooltipPinned = true;
+      for (const p of this.peers) p.closeTooltip(); // one explanation at a time
+      this.showTooltip(true);
+    }
+  }
+
+  /** Force this chain's tooltip shut (used when a sibling's opens). */
+  private closeTooltip() {
+    this.tooltipPinned = false;
+    this.hideTooltip();
+  }
+
+  private showTooltip(pinned: boolean) {
+    if (this.tooltip) {
+      this.scene.tweens.killTweensOf(this.tooltip);
+      this.tooltip.destroy();
+    }
+    const s = this.layoutScale;
+    const t = this.buildTooltip(this.tooltipText());
+    this.tooltip = t;
+    t.setScale(s * 0.9).setAlpha(0);
+    this.positionTooltip();
+    this.scene.tweens.add({
+      targets: t,
+      alpha: 1,
+      scaleX: s,
+      scaleY: s,
+      duration: 160,
+      ease: 'Back.easeOut',
+    });
+    // A tap holds it for a beat then auto-clears; a hover stays until the pointer leaves.
+    this.tooltipHideAt = pinned ? this.scene.time.now + TOOLTIP_PIN_MS : Number.POSITIVE_INFINITY;
+  }
+
+  private hideTooltip() {
+    const t = this.tooltip;
+    if (!t) return;
+    this.tooltip = null;
+    this.scene.tweens.add({
+      targets: t,
+      alpha: 0,
+      duration: 120,
+      onComplete: () => t.destroy(),
+    });
+  }
+
+  private buildTooltip(text: string): Phaser.GameObjects.Container {
+    const scene = this.scene;
+    const label = scene.add.text(0, 0, text, {
+      fontFamily: UI_FONT,
+      fontSize: '13px',
+      fontStyle: '700',
+      color: '#1c1c1c',
+      align: 'center',
+      wordWrap: { width: 220 },
+    });
+    label.setOrigin(0.5);
+    const w = (this.tooltipW = label.width + 26);
+    const h = (this.tooltipH = label.height + 16);
+    const g = scene.add.graphics();
+    g.fillStyle(PALETTE.ink, 0.2); // offset shadow
+    g.fillRoundedRect(-w / 2 + 2, -h / 2 + 3, w, h, 10);
+    g.fillStyle(0xffffff, 1);
+    g.fillRoundedRect(-w / 2, -h / 2, w, h, 10);
+    g.lineStyle(3, PALETTE.ink, 1);
+    g.strokeRoundedRect(-w / 2, -h / 2, w, h, 10);
+    return scene.add.container(0, 0, [g, label]).setDepth(60);
+  }
+
+  /** Park the tooltip just above the chip (flipping below when the chip is near the top),
+   *  tracking it each frame and clamped fully on-canvas. Does not touch scale — the pop-in
+   *  tween owns that. */
+  private positionTooltip() {
+    const t = this.tooltip;
+    if (!t) return;
+    const s = t.scaleX || this.layoutScale;
+    const halfW = (this.tooltipW * s) / 2;
+    const halfH = (this.tooltipH * s) / 2;
+    const W = this.scene.scale.width;
+    const H = this.bottomBound();
+    const gap = 10 * s + this.chipHeight() / 2;
+    let y = this.chip.y - gap - halfH; // above the chip
+    if (y - halfH < 6) y = this.chip.y + gap + halfH; // no room up top → flip below
+    const x = Phaser.Math.Clamp(this.chip.x, halfW + 4, W - halfW - 4);
+    y = Phaser.Math.Clamp(y, halfH + 4, H - halfH - 4);
+    t.setPosition(x, y);
   }
 
   update(time: number) {
@@ -545,6 +742,10 @@ export class Chain {
     if (!this.cachedTarget || this.solveAccum >= SOLVE_INTERVAL_MS) {
       this.solveAccum = 0;
       this.cachedTarget = this.solveTarget();
+      // Length of the SETTLED route — the fade alphas key off this rather than the drawn rope,
+      // which briefly shortens as it eases onto a new path (that transient dip is what made
+      // labels blink out mid-reroute).
+      this.targetArc = new Phaser.Curves.Spline(this.cachedTarget).getLength();
     }
     const target = this.cachedTarget;
 
@@ -593,10 +794,13 @@ export class Chain {
       }
     }
 
-    // When tiles are pushed together the chain has nowhere to live — fade the shapes
-    // and chip out instead of letting them pile up under the tiles.
-    const shapeAlpha = Phaser.Math.Clamp((arc - 24) / 60, 0, 1);
-    for (const img of this.shapes) img.setAlpha(shapeAlpha);
+    // When tiles are pushed together the chain has nowhere to live — fade the shapes and chip
+    // out instead of letting them pile up under the tiles. The fade keys off the SETTLED route
+    // length (targetArc), not the drawn rope, so a reroute no longer flickers the label; a
+    // light temporal smoothing settles any remaining step in that basis.
+    const alphaK = 1 - Math.exp(-dtMs / 120);
+    this.shapeAlpha += (Phaser.Math.Clamp((this.targetArc - 24) / 60, 0, 1) - this.shapeAlpha) * alphaK;
+    for (const img of this.shapes) img.setAlpha(this.shapeAlpha);
 
     // Routes already avoid words, so the chip just prefers the middle of the curve —
     // it only slides aside when a sibling chain's label would stack on top of it.
@@ -629,9 +833,28 @@ export class Chain {
       Phaser.Math.Clamp(chipPos.y, chipEdgeY, H - chipEdgeY)
     );
     this.chip.rotation = Math.sin(t * 0.9) * 0.035;
-    // Chips reach full opacity sooner than before (phone layouts pack tiles close, so
-    // the old ramp left most labels permanently half-faded).
-    this.chip.setAlpha(Phaser.Math.Clamp((arc - 50) / 55, 0, 1));
+    // Chips reach full opacity sooner than before (phone layouts pack tiles close, so the old
+    // ramp left most labels permanently half-faded). Keyed off the settled route length so a
+    // reroute doesn't blink it, with a light smoothing on top.
+    this.chipAlpha += (Phaser.Math.Clamp((this.targetArc - 50) / 55, 0, 1) - this.chipAlpha) * alphaK;
+    this.chip.setAlpha(this.chipAlpha);
+
+    // Compass arrow: swing it to aim from the chip toward `to`, so "A is a B" reads straight
+    // off the label. Subtract the chip's own gentle rock so it points true in world space.
+    if (this.chipArrow) {
+      const ang = Math.atan2(this.tileB.y - this.chip.y, this.tileB.x - this.chip.x);
+      this.chipArrow.rotation = ang - this.chip.rotation;
+    }
+
+    // Keep an open tooltip glued to the chip; auto-dismiss a tapped one, and drop it entirely
+    // if the chain has faded (tiles jammed together, nothing left to explain).
+    if (this.tooltip) {
+      this.positionTooltip();
+      if (this.scene.time.now > this.tooltipHideAt || this.chipAlpha < 0.25) {
+        this.tooltipPinned = false;
+        this.hideTooltip();
+      }
+    }
   }
 
   /** Bake the chain shape textures once per scene (2x resolution, displayed at ~0.5). */
