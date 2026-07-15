@@ -199,8 +199,10 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
       useHandCursor: true,
     });
     c.on('pointerdown', () => this.restore());
-    // Parked at the top edge, centred — clear of the corner controls and the play area below.
-    c.setPosition(scene.scale.width / 2, MARGIN + h / 2 + 4);
+    // Parked below the top corner-control row (which spans ~MARGIN..MARGIN+48), centred — the
+    // centred pill's ends used to clip the corner buttons on a narrow canvas. Anchored by its
+    // scaled top so the clearance holds whatever the bubble scale is.
+    c.setPosition(scene.scale.width / 2, MARGIN + 48 + (h / 2) * this.bubbleScale);
     c.setScale(this.bubbleScale).setAlpha(0);
     this.add(c);
     this.handle = c;

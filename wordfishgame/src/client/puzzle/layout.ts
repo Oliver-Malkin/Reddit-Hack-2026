@@ -30,8 +30,10 @@ export const LAYOUT_MARGIN = 12;
  * Tiles are scaled so at least this many letter-cells span the canvas edge-to-edge, even when
  * the widest word is short — otherwise a short widest word sits big and the chains between
  * tiles are cramped. The minimum GROWS with the tile count so a busy board packs smaller.
+ * Tuned so a typical 5-word board spans ~15 cells (≈ a 15-letter word edge-to-edge) — the
+ * previous ~21 left letters too small to read comfortably on a phone.
  */
-const MIN_VISIBLE_CELLS = 15;
+const MIN_VISIBLE_CELLS = 11;
 /** A tile's (unscaled) height is constant — every WordTile is CELL_H tall regardless of word
  *  length — so the height/area caps below can use it directly. */
 const TILE_H = CELL_H;
@@ -53,7 +55,7 @@ const MAX_AREA_FILL = 0.24;
 export function tileScaleFor(W: number, bandH: number, boxWidths: number[]): number {
   const widest = Math.max(...boxWidths);
   const count = boxWidths.length;
-  const minCells = MIN_VISIBLE_CELLS + Math.max(0, count - 3) * 3;
+  const minCells = MIN_VISIBLE_CELLS + Math.max(0, count - 3) * 2;
   const cellCap = W / (minCells * CELL_W);
   const halfCap = W / 2 / widest; // widest tile ≤ half the viewport width
   const heightCap = (bandH * MAX_HEIGHT_FRACTION) / TILE_H; // any tile ≤ ~40% of the band height
@@ -288,7 +290,7 @@ export function graphLayout(
       const dist = Math.hypot(dx, dy) || 1;
       // Axis-aligned edge separation (negative if the boxes overlap).
       const gap = Math.max(Math.abs(dx) - (a.hw + b.hw), Math.abs(dy) - (a.hh + b.hh));
-      let pull = 0;
+      let pull: number;
       if (gap > LINK_MAX) pull = (gap - LINK_MAX) * 0.5;
       else if (gap < LINK_MIN) pull = (gap - LINK_MIN) * 0.5; // negative → push apart
       // Inside the band, a gentle pull toward REST so pairs seat at a label-legible distance

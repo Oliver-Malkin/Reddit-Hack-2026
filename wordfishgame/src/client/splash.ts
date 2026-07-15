@@ -20,6 +20,7 @@
 import { context, requestExpandedMode } from '@devvit/web/client';
 import type { LinkType, Puzzle } from '../shared/puzzle';
 import type { InitResponse } from '../shared/api';
+import { utcDayLabel } from '../shared/daily';
 import { paintOutlineRing } from './textOutline';
 
 // ---------------------------------------------------------------------------------------
@@ -1416,6 +1417,12 @@ const DEMO_BIG: CustomData = {
   },
 };
 
+// The UTC day this daily post was FROZEN to at creation (see server/core/dailyStore), captured
+// from /api/init so the date label names the day the post was made rather than today — a
+// historical daily in the feed should read its own date, not drift to whatever today is. Null
+// on a community post, a legacy/untracked daily, or offline: the label then falls back to today.
+let bootDailyDay: number | null = null;
+
 async function resolveCustom(): Promise<CustomData | null> {
   try {
     const demo = new URLSearchParams(window.location.search).get('demoCustom');
@@ -1432,6 +1439,7 @@ async function resolveCustom(): Promise<CustomData | null> {
     const res = await fetch('/api/init', { signal: controller.signal });
     if (!res.ok) return null;
     const data = (await res.json()) as Partial<InitResponse>;
+    if (typeof data?.dailyDay === 'number') bootDailyDay = data.dailyDay;
     if (data && data.puzzle) {
       return {
         puzzle: data.puzzle,
@@ -1483,8 +1491,11 @@ function placeButton(cx: number, cy: number, s: number) {
   caption.style.top = `${cy + (CELL_H / 2) * s + 18}px`;
 }
 
-/** e.g. "THURSDAY 9 JULY" — reinforces that the pinned post is a fresh daily level. */
-function todayLabel(): string {
+/** e.g. "THURSDAY 9 JULY" — the daily post's own (frozen) date, so a historical post in the
+ *  feed keeps naming the day it was made. Falls back to today when the frozen day is unknown
+ *  (community post, legacy daily, or offline preview). */
+function dailyDateLabel(): string {
+  if (bootDailyDay != null) return utcDayLabel(bootDailyDay);
   try {
     return new Date()
       .toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })
@@ -1554,7 +1565,7 @@ function render(custom: CustomData | null, variantKnown: boolean) {
     drawTitle(ctx, cx, titleY, size, titleStyle);
     drawText(ctx, 'A DAILY WORD PUZZLE', cx, taglineY, clamp(Math.round(W * 0.032), 12, 17), '800', C.navy, 3);
     drawAccentDots(ctx, cx, dotsY);
-    drawText(ctx, todayLabel(), cx, dateY, 12, '700', '#6a6a6a', 1);
+    drawText(ctx, dailyDateLabel(), cx, dateY, 12, '700', '#6a6a6a', 1);
 
     placeButton(cx, btnY, btnScale);
     caption.textContent = 'TAP TO PLAY';

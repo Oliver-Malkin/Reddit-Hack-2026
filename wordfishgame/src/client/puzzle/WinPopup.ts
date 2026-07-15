@@ -1,6 +1,15 @@
 import * as Phaser from 'phaser';
 import { PALETTE, UI_FONT } from '../theme';
 import { bottomSafeInset } from '../viewport';
+import { drawFish, drawFlame, formatCount } from './glyphs';
+
+/** What a recorded solve came back with — the win card's little brag line. */
+export type SolveInfo = {
+  /** The player's streak after this solve; null when it couldn't be recorded. */
+  streak: number | null;
+  /** Distinct players who have solved this puzzle, including this one. */
+  solvers: number;
+};
 
 // Design-size dimensions — the whole card is then uniformly scaled to the viewport (see
 // popupScaleFor), so these are what it looks like at scale 1 on a comfortable desktop window,
@@ -30,6 +39,9 @@ function popupScaleFor(W: number, H: number): number {
 export type WinPopupOptions = {
   /** The solved hidden word(s), shown in the subtitle. */
   answers: string[];
+  /** The in-flight solve report — when it resolves, a streak/solvers pill springs onto the
+   *  card's bottom edge. Omitted for editor previews; a null resolution shows nothing. */
+  solveInfo?: Promise<SolveInfo | null> | undefined;
   /** Called on share click; resolve true if the share text reached the clipboard. */
   onShare: () => Promise<boolean>;
   /** Called on the HOME button — return to the main menu (the × just closes the card). */
@@ -243,6 +255,14 @@ export class WinPopup extends Phaser.GameObjects.Container {
     closeHit.on('pointerdown', () => this.dismiss());
     this.add(closeHit);
 
+    // The solve report usually lands mid-spring — pop the stats pill in once it does.
+    if (options.solveInfo) {
+      void options.solveInfo.then((info) => {
+        if (this.killed || !info) return;
+        this.showSolveStats(info);
+      });
+    }
+
     scene.add.existing(this);
     this.setDepth(100);
 
@@ -260,6 +280,79 @@ export class WinPopup extends Phaser.GameObjects.Container {
       duration: 420,
       ease: 'Back.easeOut',
     });
+  }
+
+  /**
+   * A small yellow pill astride the card's bottom border: a drawn flame + "5-DAY STREAK",
+   * and/or a drawn fish + "CAUGHT BY 123" (distinct solvers). Hangs off the border rather
+   * than living inside the card so it never re-flows the measured panel layout — it simply
+   * springs in whenever the solve report arrives.
+   */
+  private showSolveStats(info: SolveInfo) {
+    const scene = this.scene;
+    const parts: { glyph: 'flame' | 'fish'; label: string }[] = [];
+    if (info.streak != null && info.streak > 0) {
+      parts.push({ glyph: 'flame', label: `${info.streak}-DAY STREAK` });
+    }
+    if (info.solvers > 0) {
+      parts.push({ glyph: 'fish', label: `CAUGHT BY ${formatCount(info.solvers)}` });
+    }
+    if (parts.length === 0) return;
+
+    const glyphW = 15;
+    const glyphGap = 5;
+    const sepGap = 14;
+    const padX = 14;
+    const h = 27;
+
+    const labels = parts.map((p) =>
+      scene.add
+        .text(0, 0, p.label, {
+          fontFamily: UI_FONT,
+          fontSize: '12px',
+          fontStyle: '900',
+          color: '#1c1c1c',
+        })
+        .setOrigin(0, 0.5)
+    );
+    const contentW =
+      parts.reduce((sum, _, i) => sum + glyphW + glyphGap + Math.round(labels[i]!.width), 0) +
+      sepGap * (parts.length - 1);
+    const w = contentW + padX * 2;
+
+    const pill = scene.add.container(0, this.panelH / 2);
+    const bg = scene.add.graphics();
+    bg.fillStyle(PALETTE.ink, 0.2);
+    bg.fillRoundedRect(-w / 2 + 3, -h / 2 + 4, w, h, h / 2);
+    bg.fillStyle(PALETTE.yellow, 1);
+    bg.fillRoundedRect(-w / 2, -h / 2, w, h, h / 2);
+    bg.lineStyle(4, PALETTE.ink, 1);
+    bg.strokeRoundedRect(-w / 2, -h / 2, w, h, h / 2);
+    pill.add(bg);
+
+    let px = -contentW / 2;
+    parts.forEach((p, i) => {
+      const glyph =
+        p.glyph === 'flame'
+          ? drawFlame(scene, px + glyphW / 2, 0)
+          : drawFish(scene, px + glyphW / 2, 0, 0xffffff); // white fish pops on the yellow pill
+      pill.add(glyph);
+      px += glyphW + glyphGap;
+      labels[i]!.setPosition(px, 0);
+      pill.add(labels[i]!);
+      px += Math.round(labels[i]!.width);
+      if (i < parts.length - 1) {
+        const dot = scene.add.graphics();
+        dot.fillStyle(PALETTE.ink, 0.55);
+        dot.fillCircle(px + sepGap / 2, 0, 2);
+        pill.add(dot);
+        px += sepGap;
+      }
+    });
+
+    this.add(pill);
+    pill.setScale(0);
+    scene.tweens.add({ targets: pill, scale: 1, duration: 380, ease: 'Back.easeOut' });
   }
 
   /** Spring the card away and destroy it. */

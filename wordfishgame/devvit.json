@@ -5,7 +5,6 @@
         "dir": "dist/client",
         "entrypoints": {
             "default": {
-                "inline": true,
                 "entry": "splash.html"
             },
             "game": {
@@ -34,6 +33,10 @@
                 "endpoint": "/internal/menu/example-form"
             }
         ]
+    },
+    "permissions": {
+        "redis": true,
+        "reddit": true
     },
     "forms": {
         "exampleForm": "/internal/form/example-submit"

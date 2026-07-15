@@ -3,8 +3,6 @@ import type { Puzzle } from "./puzzle";
 export type InitResponse = {
   type: "init";
   postId: string;
-  count: number;
-  username: string;
   /** Present when this post is a user-created puzzle — the client plays it instead of
    *  the daily. Absent on the default / daily post. */
   puzzle?: Puzzle;
@@ -28,16 +26,38 @@ export type InitResponse = {
   dailyPuzzles?: { easy: Puzzle; hard: Puzzle };
 };
 
-export type IncrementResponse = {
-  type: "increment";
-  postId: string;
-  count: number;
+/** One puzzle's solve status: whether the requesting user has solved it, and how many
+ *  distinct players have. `solvers` is global (logged-out users see it too); `solved` is
+ *  always false when there is no logged-in user. */
+export type SolveState = {
+  solved: boolean;
+  solvers: number;
 };
 
-export type DecrementResponse = {
-  type: "decrement";
-  postId: string;
-  count: number;
+/** Everything the menu needs to decorate itself, in one round-trip: the player's streak,
+ *  plus per-puzzle solve state — `daily` on a daily post (both difficulties of that post's
+ *  frozen day), `custom` on a community-puzzle post. See routes/api.ts. */
+export type MenuStateResponse = {
+  type: "menu_state";
+  /** Consecutive days with a solve — 0 when lapsed/never; null when not logged in. */
+  streak: number | null;
+  daily?: { easy: SolveState; hard: SolveState };
+  custom?: SolveState;
+};
+
+/** Client → server: the player just solved a puzzle (never sent for editor previews). */
+export type RecordSolveRequest =
+  | { kind: "daily"; difficulty: "easy" | "hard" }
+  | { kind: "custom" };
+
+export type RecordSolveResponse = {
+  type: "solve";
+  /** The player's streak after this solve (a replay of an already-counted day is a no-op). */
+  streak: number;
+  /** Distinct players who have solved this puzzle, including this one. */
+  solvers: number;
+  /** False when this player had already solved this exact puzzle before. */
+  newSolve: boolean;
 };
 
 /** Client → server: publish a user-created puzzle as its own Reddit post. */

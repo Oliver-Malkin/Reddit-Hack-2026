@@ -23,11 +23,16 @@ export function bottomSafeInset(): number {
   } catch {
     embedded = true; // cross-origin parent blocked the check — definitely an iframe
   }
-  const touch =
-    typeof window.matchMedia === 'function'
-      ? window.matchMedia('(pointer: coarse)').matches
-      : 'ontouchstart' in window;
-  return embedded && touch ? 64 : 0;
+  return embedded && isCoarsePointer() ? 64 : 0;
+}
+
+/** True on touch-first devices (phones/tablets), false where a mouse/trackpad drives the
+ *  pointer. Used to pick device-appropriate defaults — e.g. the on-screen keyboard starts
+ *  open on touch (no physical keys) but minimised on desktop (it would just eat space). */
+export function isCoarsePointer(): boolean {
+  return typeof window.matchMedia === 'function'
+    ? window.matchMedia('(pointer: coarse)').matches
+    : 'ontouchstart' in window;
 }
 
 /** The usable canvas height once the bottom-unsafe strip (see bottomSafeInset) is removed —
