@@ -108,6 +108,10 @@ function mulberry32(seed: number) {
 
 export class BackgroundScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.TileSprite;
+  // Accumulated grid drift, wrapped to one cell. The grid scrolls by moving the whole sprite
+  // (and wrapping every GRID_CELL px) rather than by nudging tilePosition — see update() for why
+  // that distinction is the single biggest perf lever in this scene on the Canvas renderer.
+  private gridScroll = 0;
   private squiggles: Squiggle[] = [];
   private shapes: FloatingShape[] = [];
   private decorHidden = false; // clean mode — see setDecorHidden
@@ -138,9 +142,13 @@ export class BackgroundScene extends Phaser.Scene {
   // everywhere squiggles are placed so they populate the full wrap band, not just the visible
   // field (see scatterSquiggles / squiggleTargetCount).
   private readonly SQUIGGLE_Y_MARGIN = 30;
-  // The grid tilesprite extends this far past each edge so the parallax camera pan never
-  // uncovers a bare strip of off-white.
-  private readonly GRID_OVERSCAN = 520;
+  // The grid tilesprite extends this far past each edge so nothing ever uncovers a bare strip of
+  // off-white. It only has to cover the worst-case reveal: the parallax camera pan (≤160px, see
+  // parallaxOffset) plus the ≤GRID_CELL the sprite itself shifts as it scroll-wraps (see update).
+  // 160 + 60 = 220, so 240 clears it with margin. (Was 520 — pure overkill, and on the Canvas
+  // fallback every extra px is CPU blit cost every frame: the grid canvas scales with this².)
+  private readonly GRID_OVERSCAN = 240;
+  private readonly GRID_CELL = 60; // grid line spacing; the grid is periodic at this size
   private readonly TEXTURE_RES = 2; // supersample baked shape textures for crisp rotated edges
   private readonly TEXTURE_PAD = 10; // bbox padding so the thick border stroke isn't cropped
 
@@ -211,7 +219,7 @@ export class BackgroundScene extends Phaser.Scene {
   // ---------- GRID ----------
 
   private buildGrid() {
-    const cellSize = 60;
+    const cellSize = this.GRID_CELL;
     const g = this.make.graphics({}, false);
     g.fillStyle(PALETTE.offWhite, 1);
     g.fillRect(0, 0, cellSize, cellSize);
@@ -1076,8 +1084,17 @@ export class BackgroundScene extends Phaser.Scene {
     const started = PERF ? performance.now() : 0;
     if (!this.decorHidden) {
       const gridSpeed = 0.03;
-      this.grid.tilePositionX += gridSpeed * delta;
-      this.grid.tilePositionY += gridSpeed * delta;
+      // Scroll the grid by moving the whole sprite and wrapping within ONE cell — never by
+      // nudging tilePosition. On the Canvas renderer, changing tilePosition marks the TileSprite
+      // dirty, which re-runs a createPattern + fillRect over its ENTIRE (oversized, ~3.4M-px)
+      // canvas every frame (see Phaser TileSprite.updateCanvas: the fill canvas is sized in game
+      // units, so it's unaffected by render resolution) — that single fill was ~44ms/frame on a
+      // mobile Canvas fallback, i.e. the whole frame budget. The grid is periodic at GRID_CELL,
+      // so translating the sprite up to one cell and wrapping is pixel-identical but leaves the
+      // sprite un-dirtied: its pattern canvas is filled once and just blitted thereafter.
+      this.gridScroll = (this.gridScroll + gridSpeed * delta) % this.GRID_CELL;
+      const o = this.GRID_OVERSCAN;
+      this.grid.setPosition(-o - this.gridScroll, -o - this.gridScroll);
       // Horizontal wrap sits well past the right edge (like the shapes) so a parallax-
       // offset camera never catches a squiggle popping back in. Vertical stays tight — the
       // camera only pans on X, so the bottom re-entry is always off-screen already.
