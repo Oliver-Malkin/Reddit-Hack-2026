@@ -6,9 +6,16 @@ import { media, redis } from '@devvit/web/server';
  * placeholder. Source PNG lives in the repo and mirrors the splash screen's Memphis look;
  * see assets/share-image.png (a static capture of splash.ts's rendering).
  */
+// Pinned to a commit so the source is immutable — bump this hash whenever the asset changes
+// (the cache key below is derived from the URL, so a new hash auto-re-uploads rather than
+// serving the stale Reddit-hosted copy forever). This points at the dateless share card; an
+// earlier hash pinned a capture with "MONDAY 13 JULY" baked in, which then showed on every
+// post's link unfurl.
 const SOURCE_URL =
-  'https://raw.githubusercontent.com/Oliver-Malkin/Reddit-Hack-2026/6b9f7874de02b7d99943f29f3f3ea0e3115c1364/wordfishgame/assets/share-image.png';
-const CACHE_KEY = 'shareImageUrl';
+  'https://raw.githubusercontent.com/Oliver-Malkin/Reddit-Hack-2026/cce2720cc3563cc87f3205c3b079a9b4d41ba225/wordfishgame/assets/share-image.png';
+// Keyed by the source URL so changing SOURCE_URL misses the cache and re-uploads — the old
+// entry just goes stale and unused. A fixed key would pin the first-ever upload for good.
+const CACHE_KEY = `shareImageUrl:${SOURCE_URL}`;
 
 /** Reddit's media host only needs to be given the source URL once — the resulting
  *  Reddit-hosted URL is cached in Redis and reused for every post after that. */
