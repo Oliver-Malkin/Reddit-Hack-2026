@@ -11,7 +11,7 @@ import { TutorialCoach } from '../puzzle/TutorialCoach';
 import type { CoachStep } from '../puzzle/TutorialCoach';
 import { scatterHomes } from '../puzzle/scatter';
 import { tileScaleFor } from '../puzzle/layout';
-import { bottomSafeInset } from '../viewport';
+import { bottomSafeInset, isCoarsePointer } from '../viewport';
 import { PALETTE } from '../theme';
 import { slideCameraIn, transitionToPage, isTransitioning, SLIDE_DURATION } from './pageTransition';
 import type { PageEnterData } from './pageTransition';
@@ -123,7 +123,8 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
     this.build();
     this.placeTiles(true);
     for (const chain of this.chains) chain.setPeers(this.chains);
-    this.keyboard?.setMinimized(false);
+    // Back to the device default: open on touch (no physical keys), tucked away on desktop.
+    this.keyboard?.setMinimized(!isCoarsePointer());
 
     this.coach = new TutorialCoach(this);
 
@@ -409,7 +410,7 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
         };
       case 'antonym':
         return {
-          text: 'The chains show how two words relate. This one here is an antonym chain - the words connected by it are opposites. Tap any chain\s label to see exactly what it\s saying!',
+          text: "The chains show how two words relate. This one here is an antonym chain - the words connected by it are opposites. Tap any chain's label to see exactly what it's saying!",
           target: () => this.chainRect(this.antonymChain, 'sad', 'happy'),
           progress,
           minimizable: true,

@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { PALETTE, UI_FONT } from '../theme';
+import { drawFish, drawSolvedTick, formatCount } from './glyphs';
 
 /** Small difficulty indicator drawn under the label: `filled` of `total` dots lit. */
 export type MenuButtonPips = { filled: number; total: number; color: number };
@@ -38,6 +39,10 @@ export class MenuButton extends Phaser.GameObjects.Container {
   private onTap: () => void;
   private pressed = false;
   private enabled = true;
+  // Optional solve-state decorations (see setSolved / setSolvers). Both live inside `content`
+  // so they press-shift with the face — the whole button stays one tactile object.
+  private solvedTick: Phaser.GameObjects.Container | null = null;
+  private solversChip: Phaser.GameObjects.Container | null = null;
 
   constructor(scene: Phaser.Scene, x: number, y: number, opts: MenuButtonOptions) {
     super(scene, x, y);
@@ -87,6 +92,69 @@ export class MenuButton extends Phaser.GameObjects.Container {
     this.on('pointerout', () => this.setPressed(false));
 
     scene.add.existing(this);
+  }
+
+  /** Show (or clear) the green "already solved" tick riding the button's top-right corner —
+   *  today's catch stays visibly caught when the player comes back to the menu. `animate`
+   *  springs it in, for when the state lands after the button is already on screen. */
+  setSolved(solved: boolean, animate = false) {
+    if (!solved) {
+      this.solvedTick?.destroy();
+      this.solvedTick = null;
+      return;
+    }
+    if (this.solvedTick) return;
+    const tick = this.scene.add.container(this.boxW / 2 - 6, -this.boxH / 2 + 6);
+    tick.add(drawSolvedTick(this.scene, 0, 0, 13));
+    this.content.add(tick);
+    this.solvedTick = tick;
+    if (animate) {
+      tick.setScale(0);
+      this.scene.tweens.add({ targets: tick, scale: 1, duration: 320, ease: 'Back.easeOut' });
+    }
+  }
+
+  /** Show how many distinct players have solved this puzzle — a mini white pill with a drawn
+   *  fish, sitting astride the button's bottom-right edge. Hidden for null (unknown/offline)
+   *  and for 0: "nobody has caught this yet" is better left unsaid than shown. */
+  setSolvers(count: number | null, animate = false) {
+    this.solversChip?.destroy();
+    this.solversChip = null;
+    if (count == null || count <= 0) return;
+
+    const scene = this.scene;
+    const label = scene.add.text(0, 0, formatCount(count), {
+      fontFamily: UI_FONT,
+      fontSize: '11px',
+      fontStyle: '900',
+      color: '#1c1c1c',
+    });
+    label.setOrigin(0, 0.5);
+
+    const fishW = 14;
+    const gap = 4;
+    const padX = 8;
+    const h = 21;
+    const w = padX + fishW + gap + Math.round(label.width) + padX;
+    // Astride the bottom border, tucked toward the right corner (the tick owns the top-right).
+    const chip = scene.add.container(this.boxW / 2 - w / 2 - 14, this.boxH / 2);
+
+    const g = scene.add.graphics();
+    g.fillStyle(0xffffff, 1);
+    g.fillRoundedRect(-w / 2, -h / 2, w, h, h / 2);
+    g.lineStyle(3, PALETTE.ink, 1);
+    g.strokeRoundedRect(-w / 2, -h / 2, w, h, h / 2);
+    chip.add(g);
+    chip.add(drawFish(scene, -w / 2 + padX + fishW / 2, 0));
+    label.setPosition(-w / 2 + padX + fishW + gap, 0);
+    chip.add(label);
+
+    this.content.add(chip);
+    this.solversChip = chip;
+    if (animate) {
+      chip.setScale(0);
+      this.scene.tweens.add({ targets: chip, scale: 1, duration: 320, ease: 'Back.easeOut' });
+    }
   }
 
   /** Grey out and stop responding (e.g. while a modal is open or during a transition). */

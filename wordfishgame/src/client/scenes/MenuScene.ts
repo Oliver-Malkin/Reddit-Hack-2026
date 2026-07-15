@@ -20,7 +20,8 @@ import { utcDayLabel } from '../../shared/daily';
 import type { BackgroundScene } from './BackgroundScene';
 import { slideCameraIn, transitionToPage, jumpToPage, isTransitioning } from './pageTransition';
 import type { PageEnterData } from './pageTransition';
-import type { UserStreak } from '../../shared/api';
+import type { MenuStateResponse } from '../../shared/api';
+import { drawFlame } from '../puzzle/glyphs';
 
 const MARGIN = 16;
 /** The three small accent dots under the tagline — a quiet Memphis divider. */
@@ -55,12 +56,18 @@ export class MenuScene extends Phaser.Scene {
   // (title + author + Play) instead of the daily menu. Resolved once at boot.
   private customPuzzle: CustomPuzzle | null = getBootPuzzle();
 
-  // The player's daily-solve streak, fetched once from the server (see fetchStreak) and cached
-  // so every later render — resize, return to menu — draws from this instead of refetching.
-  // null means "not resolved yet" (still loading, or logged out / fetch failed): the badge slot
-  // stays empty. 0 means resolved-but-no-active-streak; >0 is the run length.
-  private streak: number | null = null;
-  private streakRequested = false;
+  // Streak + per-puzzle solve state, fetched from /api/menu_state (see fetchMenuState) and
+  // cached so a resize redraws instantly from the cache. Marked stale on every wake — coming
+  // home from a just-solved puzzle should show the fresh tick/count/streak, so wakes refetch.
+  // null means "not resolved yet" (still loading, or offline / local preview): the badge slot
+  // and button decorations stay empty until a response lands.
+  private menuState: MenuStateResponse | null = null;
+  private menuStateStale = true;
+  private menuStateLoading = false;
+  // The freshly built buttons the async state decorates in place: the daily pair, or the
+  // community-intro PLAY button. Reset by each render (the old objects are destroyed).
+  private dailyButtons: { easy: MenuButton; hard: MenuButton } | null = null;
+  private customPlayButton: MenuButton | null = null;
   // The streak badge lives in a fixed-height slot so the async value landing never shifts the
   // menu below it. These track where to (re)draw it, and the current badge object for in-place
   // replacement when the fetch resolves after the first render.
@@ -87,6 +94,8 @@ export class MenuScene extends Phaser.Scene {
     // instead, since those swaps happen behind the editor overlay and mustn't move.
     this.events.on(Phaser.Scenes.Events.WAKE, (_sys: unknown, data: Partial<PageEnterData>) => {
       this.transitioning = false;
+      // The player may have just solved something — refetch so the tick/count/streak are live.
+      this.menuStateStale = true;
       // Coming back from a preview: bring the (still-alive) editor overlay back on top, its
       // form exactly as it was left — the menu underneath stays inert (render() disables the
       // buttons while editorOpen). Any other wake ends the editor journey, so the flag is
@@ -125,7 +134,7 @@ export class MenuScene extends Phaser.Scene {
     // extend past the plain cap-height, so a fixed titleSize/2 gap let the card cover it.
     const titleHalfH = (title.getData('halfHeight') as number) ?? titleSize / 2;
     let y = titleTop + titleHalfH + 12;
-    
+
     const tagline = this.text(cx, y, 'A DAILY WORD PUZZLE', Phaser.Math.Clamp(Math.round(W * 0.026), 12, 17), '800', '#2b2d6e');
     tagline.setLetterSpacing(3);
     y += tagline.height + 12;
@@ -140,13 +149,12 @@ export class MenuScene extends Phaser.Scene {
 
     // ---- Streak badge ----
     // A fixed-height slot so the (async) streak value landing later never nudges the buttons
-    // below. drawStreakBadge fills it from the cached value; fetchStreak kicks the one-time
-    // load and patches the badge in place when it resolves.
+    // below. drawStreakBadge fills it from the cached state; fetchMenuState (called once the
+    // buttons exist, below) patches it in place when a fresh value resolves.
     const streakSlotH = 30;
     this.streakCenter = { x: cx, y: y + streakSlotH / 2 };
     this.streakBadge = null; // the previous one was destroyed by root.removeAll above
     this.drawStreakBadge();
-    this.fetchStreak();
     y += streakSlotH + 14;
 
     // ---- Lower group (daily header + difficulty + tutorial), vertically centred in the
@@ -221,6 +229,13 @@ export class MenuScene extends Phaser.Scene {
     // must not resurrect live buttons beneath it — openEditor disabled the previous set.
     if (this.editorOpen) for (const b of this.buttons) b.setEnabled(false);
 
+    // Decorate the difficulty buttons from the cached solve state (instant on a resize
+    // rebuild), then refresh it if stale — the response patches everything in place.
+    this.dailyButtons = { easy, hard };
+    this.customPlayButton = null;
+    this.applySolveState(false);
+    this.fetchMenuState();
+
     // Clean-mode toggle in the top-right corner — shared with the puzzle (see decorToggle).
     const r = 20;
     const decor = createDecorToggle(this, () => this.sfx.tap());
@@ -243,15 +258,18 @@ export class MenuScene extends Phaser.Scene {
   private drawStreakBadge(animate = false) {
     this.streakBadge?.destroy();
     this.streakBadge = null;
-    if (this.streak === null) return;
+    // No badge until the state resolves — and none at all when logged out (streak: null),
+    // since an anonymous browser can't hold a streak.
+    const streak = this.menuState?.streak;
+    if (streak == null) return;
 
     const { x, y } = this.streakCenter;
-    const active = this.streak > 0;
+    const active = streak > 0;
     // Emoji is deliberately avoided — it renders on-canvas only where a colour-emoji font
     // happens to be installed, which isn't guaranteed across Reddit's webviews. A small drawn
-    // flame carries the "streak" idea reliably instead (see below); the copy stays plain text.
+    // flame carries the "streak" idea reliably instead (see glyphs); the copy stays plain text.
     const label = active
-      ? `${this.streak}-DAY STREAK`
+      ? `${streak}-DAY STREAK`
       : 'START A STREAK TODAY';
 
     const badge = this.add.container(x, y);
@@ -286,7 +304,7 @@ export class MenuScene extends Phaser.Scene {
     const contentLeft = -contentW / 2;
     badge.add(pill);
     if (active) {
-      const flame = this.drawFlame(contentLeft + flameW / 2, 0);
+      const flame = drawFlame(this, contentLeft + flameW / 2, 0);
       badge.add(flame);
       text.setPosition(contentLeft + flameW + flameGap + Math.round(text.width) / 2, 0);
     } else {
@@ -302,42 +320,53 @@ export class MenuScene extends Phaser.Scene {
     }
   }
 
-  /** A small Memphis flame (red teardrop with a warm inner highlight), drawn from primitives
-   *  so it renders everywhere an emoji might not. Centred on (x, y) in its parent container. */
-  private drawFlame(x: number, y: number): Phaser.GameObjects.Graphics {
-    const g = this.add.graphics();
-    g.setPosition(x, y);
-    g.fillStyle(PALETTE.red, 1);
-    g.fillCircle(0, 3, 5);
-    g.fillTriangle(-5, 3, 5, 3, 0, -9);
-    g.fillStyle(0xfff2c4, 1); // cream inner flame for a hint of depth on the yellow pill
-    g.fillCircle(0, 4, 2.4);
-    g.fillTriangle(-2.4, 4, 2.4, 4, 0, -2);
-    return g;
+  /**
+   * Decorate the current page's buttons from the cached menu state: solved ticks and
+   * distinct-solver chips on the daily pair (or the community PLAY button). Reads only the
+   * slice that matches the current page, so a daily response can never decorate a community
+   * intro or vice versa. `animate` springs the decorations in when fresh state lands on an
+   * already-visible menu; a resize rebuild draws them instantly.
+   */
+  private applySolveState(animate: boolean) {
+    const state = this.menuState;
+    if (this.dailyButtons) {
+      const daily = state?.daily;
+      this.dailyButtons.easy.setSolved(daily?.easy.solved ?? false, animate);
+      this.dailyButtons.easy.setSolvers(daily?.easy.solvers ?? null, animate);
+      this.dailyButtons.hard.setSolved(daily?.hard.solved ?? false, animate);
+      this.dailyButtons.hard.setSolvers(daily?.hard.solvers ?? null, animate);
+    }
+    if (this.customPlayButton) {
+      this.customPlayButton.setSolved(state?.custom?.solved ?? false, animate);
+      this.customPlayButton.setSolvers(state?.custom?.solvers ?? null, animate);
+    }
   }
 
   /**
-   * Fetch the player's streak once and cache it. The `streakRequested` guard makes every later
-   * render (resize / return to menu) a no-op, so the menu draws from the cached value rather
-   * than hitting the server each time. When the value lands, patch the badge in place — but
-   * only if the daily menu is still the live page (not navigated away, asleep, or turned into a
-   * community-puzzle intro, none of which have a streak slot).
+   * Fetch streak + solve state and cache it. Skipped while a request is in flight or the
+   * cache is still fresh — it goes stale on every wake (see create), so returning from a
+   * just-won puzzle picks up the new tick/count/streak. When a response lands, the badge and
+   * button decorations are patched in place — but only if this menu is still the live page
+   * (not navigated away or asleep).
    */
-  private fetchStreak() {
-    if (this.streakRequested) return;
-    this.streakRequested = true;
+  private fetchMenuState() {
+    if (this.menuStateLoading || !this.menuStateStale) return;
+    this.menuStateLoading = true;
     void (async () => {
       try {
-        const response = await fetch('/api/fetch_streak');
-        if (!response.ok) return; // e.g. logged out (no userId) — leave the badge hidden
-        const data = (await response.json()) as UserStreak;
-        this.streak = data.streak;
+        const response = await fetch('/api/menu_state');
+        if (!response.ok) return; // no server (local preview) — leave the menu undecorated
+        this.menuState = (await response.json()) as MenuStateResponse;
+        this.menuStateStale = false;
       } catch (error) {
-        console.error('Failed to fetch streak', error);
+        console.error('Failed to fetch menu state', error);
         return;
+      } finally {
+        this.menuStateLoading = false;
       }
-      if (this.customPuzzle || !this.scene.isActive()) return;
-      this.drawStreakBadge(true);
+      if (!this.scene.isActive()) return;
+      if (!this.customPuzzle) this.drawStreakBadge(true); // the intro splash has no badge slot
+      this.applySolveState(true);
     })();
   }
 
@@ -436,6 +465,12 @@ export class MenuScene extends Phaser.Scene {
     this.root.add(this.buttons);
     // Same guard as render(): no live buttons under an open editor overlay.
     if (this.editorOpen) for (const b of this.buttons) b.setEnabled(false);
+
+    // Same solve-state decoration as the daily menu, on this one puzzle's PLAY button.
+    this.dailyButtons = null;
+    this.customPlayButton = play;
+    this.applySolveState(false);
+    this.fetchMenuState();
 
     if (showDelete) {
       gy += deleteGap;
@@ -590,6 +625,4 @@ export class MenuScene extends Phaser.Scene {
     this.root.add(t);
     return t;
   }
-
-  
 }

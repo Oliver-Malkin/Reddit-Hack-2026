@@ -1,7 +1,7 @@
 import * as Phaser from 'phaser';
 import { WordTile } from '../puzzle/WordTile';
 import type { TileFxName, TileHost } from '../puzzle/WordTile';
-import { bottomSafeInset } from '../viewport';
+import { bottomSafeInset, isCoarsePointer } from '../viewport';
 import { Chain } from '../puzzle/Chain';
 import { OnScreenKeyboard } from '../puzzle/Keyboard';
 import { IconButton } from '../puzzle/IconButton';
@@ -22,6 +22,8 @@ import { showPuzzleEditor } from '../puzzle/editor/PuzzleEditor';
 import { BackgroundScene } from './BackgroundScene';
 import { slideCameraIn, transitionToPage, jumpToPage, isTransitioning } from './pageTransition';
 import type { PageEnterData } from './pageTransition';
+import type { RecordSolveRequest, RecordSolveResponse } from '../../shared/api';
+import type { SolveInfo } from '../puzzle/WinPopup';
 
 /** 'gallery' shows one row per link type for design review; 'puzzle' plays a daily puzzle. */
 const MODE: 'gallery' | 'puzzle' = 'puzzle';
@@ -123,7 +125,8 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     // The clean toggle is shared with the menu; re-sync its glyph to the current state.
     const bg = this.scene.get('BackgroundScene') as BackgroundScene;
     this.cleanButton?.setFace((f) => drawDecorGlyph(f, bg.isDecorHidden()));
-    this.keyboard?.setMinimized(false);
+    // Back to the device default: open on touch (no physical keys), tucked away on desktop.
+    this.keyboard?.setMinimized(!isCoarsePointer());
 
     // Preview vs. daily: the top-left control is a back arrow (→ form) in preview, else the
     // home glyph (→ menu). A "PREVIEW" badge makes it obvious this puzzle isn't published.
@@ -594,9 +597,10 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
 
     this.won = true;
     this.sfx.win();
-    // Count this solve toward the player's daily streak — but never for an in-editor preview,
-    // which is the creator testing their own board and would otherwise inflate their streak.
-    if (!this.isPreview) this.recordStreakSolve();
+    // Report the solve (streak, solved-mark, distinct-solver count, flair) — but never for an
+    // in-editor preview, which is the creator testing their own board and would otherwise
+    // inflate everything. The win card shows the response's streak/solvers when it lands.
+    const solveInfo = this.isPreview ? undefined : this.recordSolve();
     // Typing is over — tuck the keyboard away so the celebration owns the canvas.
     this.keyboard?.setMinimized(true);
     this.cameras.main.flash(250, 255, 255, 255);
@@ -613,6 +617,7 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
         const cy = this.scale.height * 0.42;
         const popup = new WinPopup(this, cx, cy, {
           answers,
+          solveInfo,
           onShare: () => this.shareResult(),
           onHome: () => this.returnToMenu(),
         });
@@ -625,13 +630,28 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
     });
   }
 
-  /** Tell the server this player solved a puzzle today, extending (or starting) their daily
-   *  streak — see server routes/api.ts. Fire-and-forget: the menu reads the new value the next
-   *  time it's shown, and a failure here just means the streak isn't bumped, never a crash. */
-  private recordStreakSolve() {
-    void fetch('/api/increment_streak', { method: 'POST' }).catch((err) =>
-      console.error('Failed to record streak', err)
-    );
+  /** Tell the server this player solved this puzzle — it marks the board solved for them,
+   *  bumps the distinct-solver count, extends (or starts) their streak and refreshes their
+   *  flair (see server routes/api.ts). Best-effort: the win card shows the returned numbers
+   *  if they arrive, and any failure resolves to null — the menu just refetches later. */
+  private recordSolve(): Promise<SolveInfo | null> {
+    const body: RecordSolveRequest = this.customMeta
+      ? { kind: 'custom' }
+      : { kind: 'daily', difficulty: this.currentDifficulty };
+    return fetch('/api/record_solve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+      .then(async (res) => {
+        if (!res.ok) return null; // logged out / offline — the win is still a win
+        const data = (await res.json()) as RecordSolveResponse;
+        return { streak: data.streak, solvers: data.solvers };
+      })
+      .catch((err) => {
+        console.error('Failed to record solve', err);
+        return null;
+      });
   }
 
   // One sea-creature per hidden word — a spoiler-free tally of how many words were caught,

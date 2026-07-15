@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { PALETTE, UI_FONT, cssColor } from '../theme';
-import { bottomSafeInset } from '../viewport';
+import { bottomSafeInset, isCoarsePointer } from '../viewport';
 
 const ROWS = ['QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM'];
 const GAP = 6;
@@ -61,7 +61,10 @@ export class OnScreenKeyboard extends Phaser.GameObjects.Container {
   private keyH = 40;
   private panelW = 0;
   private panelH = 0;
-  private minimized = false;
+  // Touch devices open with the keyboard up (no physical keys); desktop starts it tucked away
+  // in the corner tab, where a physical keyboard makes the on-screen one dead weight. The
+  // scenes reset to this same default on every entry (see their enter()).
+  private minimized = !isCoarsePointer();
   // Baked-panel texture key, unique PER SCENE. Each scene has its own keyboard, and the
   // texture manager is game-wide — a shared key let one scene's re-bake destroy the texture
   // another scene's keyboard image still pointed at, which rendered a dead texture (blank
