@@ -7,8 +7,15 @@ import { buildTitle, pickTitleStyle } from '../puzzle/titleStyles';
 import type { TitleStyle } from '../puzzle/titleStyles';
 import type { Difficulty, Puzzle } from '../puzzle/types';
 import { openPuzzleEditor, showPuzzleEditor } from '../puzzle/editor/PuzzleEditor';
-import { getBootPuzzle, getBootDailyDay } from '../puzzle/remote';
+import {
+  getBootPuzzle,
+  getBootDailyDay,
+  getBootIsOwnPuzzle,
+  deleteOwnPuzzle,
+  navigateToPost,
+} from '../puzzle/remote';
 import type { CustomPuzzle } from '../puzzle/remote';
+import { ConfirmPopup } from '../puzzle/ConfirmPopup';
 import { utcDayLabel } from '../../shared/daily';
 import type { BackgroundScene } from './BackgroundScene';
 import { slideCameraIn, transitionToPage, jumpToPage, isTransitioning } from './pageTransition';
@@ -252,7 +259,15 @@ export class MenuScene extends Phaser.Scene {
 
     const author = this.text(cx, 0, `by u/${custom.author}`, Phaser.Math.Clamp(Math.round(W * 0.03), 13, 18), '700', '#2b2d6e');
 
-    const groupH = puzzleTitle.height + 10 + author.height + 24 + btnH + gapBtn + tutH;
+    // Only the puzzle's own creator sees this (server-checked — see puzzle/remote's
+    // getBootIsOwnPuzzle), tucked below the main buttons as a small, deliberately
+    // low-key link so it's never mistaken for part of the normal play flow.
+    const showDelete = getBootIsOwnPuzzle();
+    const deleteGap = showDelete ? 16 : 0;
+    const deleteSize = Phaser.Math.Clamp(Math.round(W * 0.024), 11, 13);
+
+    const groupH =
+      puzzleTitle.height + 10 + author.height + 24 + btnH + gapBtn + tutH + deleteGap + deleteSize;
     const groupTop = y + Math.max(0, (H - y - MARGIN - groupH) / 2);
     let gy = groupTop;
 
@@ -280,11 +295,20 @@ export class MenuScene extends Phaser.Scene {
       textColor: '#1c1c1c',
       onTap: () => this.openTutorial(),
     });
+    gy += tutH;
 
     this.buttons = [play, tutorial];
     this.root.add(this.buttons);
     // Same guard as render(): no live buttons under an open editor overlay.
     if (this.editorOpen) for (const b of this.buttons) b.setEnabled(false);
+
+    if (showDelete) {
+      gy += deleteGap;
+      const deleteLink = this.text(cx, gy + deleteSize / 2, 'DELETE MY PUZZLE', deleteSize, '900', '#c23b3b');
+      deleteLink.setLetterSpacing(1);
+      deleteLink.setInteractive({ useHandCursor: true });
+      deleteLink.on('pointerdown', () => this.confirmDeletePuzzle());
+    }
 
     // Clean-mode toggle, shared with the puzzle, in the top-right corner.
     const r = 20;
@@ -362,6 +386,34 @@ export class MenuScene extends Phaser.Scene {
     const data: Record<string, unknown> = { puzzle };
     if (c) data.customMeta = { title: c.title, author: c.author, url: c.url };
     this.openPage('PuzzleScene', data, () => this.sfx.drop());
+  }
+
+  /** "Delete my puzzle": confirm first (irreversible — it's a real Reddit post going away),
+   *  then hand off to the server (which re-checks ownership) and leave for the subreddit,
+   *  since this post won't exist to come back to. */
+  private confirmDeletePuzzle() {
+    if (this.editorOpen || this.transitioning || isTransitioning()) return;
+    this.sfx.tap();
+    new ConfirmPopup(this, {
+      message: "Delete this puzzle? It removes the Reddit post for good — this can't be undone.",
+      confirmLabel: 'DELETE',
+      onConfirm: () => void this.performDeletePuzzle(),
+      onClose: () => {},
+    });
+  }
+
+  private async performDeletePuzzle() {
+    const result = await deleteOwnPuzzle();
+    if (result.ok) {
+      await navigateToPost(result.subredditUrl);
+      return;
+    }
+    new ConfirmPopup(this, {
+      message: result.message,
+      confirmLabel: 'OK',
+      onConfirm: () => {},
+      onClose: () => {},
+    });
   }
 
   /** Hand off to another page (puzzle / tutorial): sweep this menu off to the left while the

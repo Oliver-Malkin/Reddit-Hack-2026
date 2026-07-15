@@ -142,3 +142,9 @@ export async function loadPuzzle(postId: string): Promise<StoredPuzzle | null> {
     return null;
   }
 }
+
+/** Drop a community puzzle's stored data — called once its post has been deleted, so a stale
+ *  Redis entry can't outlive the post it belonged to. */
+export async function deletePuzzle(postId: string): Promise<void> {
+  await redis.del(puzzleKey(postId));
+}

@@ -3,7 +3,7 @@
  *  Every puzzle passed a uniqueness check: no other word (or word tuple) in a
  *  ~152k-word lexicon fits all the clues at the answers' lengths.
  *  Vet puzzles in scripts/puzzlegen/review.html; skips + banned links live in rejects.json. */
-import type { Puzzle } from './types';
+import type { Puzzle } from './puzzle';
 
 export const easyPuzzles: Puzzle[] = [
   {

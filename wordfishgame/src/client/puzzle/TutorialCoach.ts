@@ -96,9 +96,13 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
     // than the space it's meant to leave clear). ~1 on a comfortable window; the height term
     // handles short landscape windows where the text box would otherwise fill the screen.
     // Grows a little on a roomy desktop window (up to 1.1), shrinks to fit a small phone
-    // (down to 0.6) — same dynamic-scaling idea as WinPopup's popupScaleFor.
+    // (down to 0.6) — same dynamic-scaling idea as WinPopup's popupScaleFor. A mild power
+    // curve on the sub-1 side makes the falloff a bit steeper as the window gets smaller
+    // (full size is unaffected — raw=1 stays 1), so the box doesn't linger oversized on a
+    // moderately-shrunk window before finally shrinking.
     const safeH = H - bottomSafeInset();
-    this.bubbleScale = Phaser.Math.Clamp(Math.min(W / 420, safeH / 600), 0.6, 1.1);
+    const raw = Math.min(W / 420, safeH / 600);
+    this.bubbleScale = Phaser.Math.Clamp(raw < 1 ? Math.pow(raw, 1.2) : raw, 0.6, 1.1);
     bubble.setScale(this.bubbleScale); // final size, so positioning uses the scaled bounds
 
     this.refreshSpotlight();
@@ -119,6 +123,14 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
       this.revealed = true;
       scene.tweens.add({ targets: this, alpha: 1, duration: 300 });
     }
+  }
+
+  /** Update the drag floor (see the bubble's 'drag' handler) without rebuilding anything —
+   *  called when the keyboard opens/closes, since that changes how far down the bubble may be
+   *  dragged but isn't itself a step change (show() is what sets this initially). Without this,
+   *  minimizing the keyboard left the bubble still clamped to where the keyboard USED to be. */
+  setBottomLimit(bottomLimit: number) {
+    this.bottomLimit = bottomLimit;
   }
 
   /** Collapse the bubble to a small "SHOW TIP" handle at the top of the screen and drop the
@@ -163,7 +175,7 @@ export class TutorialCoach extends Phaser.GameObjects.Container {
   private showHandle() {
     this.handle?.destroy();
     const scene = this.scene;
-    const label = scene.add.text(0, 0, 'SHOW TIP', {
+    const label = scene.add.text(0, 0, 'SHOW TUTORIAL', {
       fontFamily: UI_FONT,
       fontSize: '13px',
       fontStyle: '900',

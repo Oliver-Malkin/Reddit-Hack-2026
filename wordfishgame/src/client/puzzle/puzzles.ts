@@ -1,6 +1,5 @@
 import type { Difficulty, Puzzle } from './types';
-import { easyPuzzles, hardPuzzles } from './puzzleBank';
-import { utcDayNumber } from '../../shared/daily';
+import { puzzleForDifficulty as pickDailyPuzzle } from '../../shared/dailyPuzzle';
 
 /** DOG ⊃ (HUSKY) = RASPY — the hidden middle word links both clues. */
 export const dogPuzzle: Puzzle = {
@@ -92,18 +91,17 @@ export const grievePuzzle: Puzzle = {
 };
 
 /**
- * The puzzle for a given difficulty on a given day, drawn from the generated bank
- * (see scripts/puzzlegen). The bank is pre-shuffled, so stepping through it by day
- * gives varied puzzles with no repeats until the whole bank has been played.
- * Falls back to the handcrafted puzzles if a bank is ever empty.
+ * The puzzle for a given difficulty on a given day (see shared/dailyPuzzle for the actual
+ * bank lookup). Falls back to the handcrafted puzzles if a bank is ever empty.
  *
- * `day` defaults to the live UTC day, but a daily post passes its FROZEN day (from
- * /api/init — see shared/daily) so a historical daily always shows its own board.
+ * `day` defaults to the live UTC day, but a daily post prefers its FROZEN puzzle (from
+ * /api/init's dailyPuzzles — see puzzle/remote's getBootDailyPuzzles) over recomputing from
+ * the live bank, so a historical daily always shows the board it actually had that day even
+ * if the bank has since been edited/regenerated. This function is the fallback for legacy
+ * posts predating that freeze, and for local preview.
  */
-export function puzzleForDifficulty(difficulty: Difficulty, day: number = utcDayNumber()): Puzzle {
-  const bank = difficulty === 'hard' ? hardPuzzles : easyPuzzles;
-  const daily = bank[((day % bank.length) + bank.length) % Math.max(bank.length, 1)];
-  return daily ?? (difficulty === 'hard' ? grievePuzzle : applePuzzle);
+export function puzzleForDifficulty(difficulty: Difficulty, day?: number): Puzzle {
+  return pickDailyPuzzle(difficulty, day) ?? (difficulty === 'hard' ? grievePuzzle : applePuzzle);
 }
 
 /** Fallback puzzle when the scene is booted directly (e.g. debugging) with no difficulty. */

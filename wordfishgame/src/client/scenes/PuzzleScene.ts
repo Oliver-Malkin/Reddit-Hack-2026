@@ -12,7 +12,7 @@ import { WinPopup } from '../puzzle/WinPopup';
 import { scatterHomes } from '../puzzle/scatter';
 import { tileScaleFor, graphLayout, LAYOUT_MARGIN, mulberry32, hashIds } from '../puzzle/layout';
 import { activePuzzle, puzzleForDifficulty } from '../puzzle/puzzles';
-import { getBootDailyDay } from '../puzzle/remote';
+import { getBootDailyDay, getBootDailyPuzzles } from '../puzzle/remote';
 import { galleryRows } from '../puzzle/gallery';
 import type { Difficulty, Puzzle } from '../puzzle/types';
 import { PALETTE } from '../theme';
@@ -149,11 +149,16 @@ export class PuzzleScene extends Phaser.Scene implements TileHost {
   /** Build the daily puzzle for a difficulty onto the (already cleared) board. */
   private loadPuzzle(difficulty: Difficulty) {
     this.currentDifficulty = difficulty;
-    // A daily post is frozen to the day it was created (getBootDailyDay); fall back to the
-    // live UTC day for local preview / legacy posts (puzzleForDifficulty's default).
+    // Prefer the day's FROZEN puzzle (getBootDailyPuzzles) so a historical daily keeps showing
+    // what it showed even if the bank has since been edited/regenerated. Fall back to
+    // recomputing from the live bank for local preview / legacy posts predating the freeze.
+    const frozen = getBootDailyPuzzles();
     const day = getBootDailyDay();
-    this.currentPuzzle =
-      day != null ? puzzleForDifficulty(difficulty, day) : puzzleForDifficulty(difficulty);
+    this.currentPuzzle = frozen
+      ? frozen[difficulty]
+      : day != null
+        ? puzzleForDifficulty(difficulty, day)
+        : puzzleForDifficulty(difficulty);
     this.buildPuzzle(this.currentPuzzle);
   }
 

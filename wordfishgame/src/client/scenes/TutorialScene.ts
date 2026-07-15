@@ -74,7 +74,14 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
     Chain.bakeTextures(this);
     this.keyboard = new OnScreenKeyboard(this, {
       onKey: (key) => this.routeKey(key),
-      onToggle: () => this.placeTiles(),
+      onToggle: () => {
+        this.placeTiles();
+        // The keyboard opening/closing changes how far down the coach bubble may be dragged
+        // (coachBottom() reads its reservedHeight()) — refresh the clamp so minimizing the
+        // keyboard actually frees up that space instead of leaving the bubble stuck above
+        // where the keyboard used to be.
+        this.coach?.setBottomLimit(this.coachBottom());
+      },
     });
     // Above the coach dim (depth 120), so the keyboard is never greyed out — the player
     // types on it during the tutorial.
@@ -378,8 +385,9 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
     switch (key) {
       case 'intro':
         return {
-          text: 'Welcome to WordFish! Every puzzle is a little web of linked words. Some words are missing, and the links help tell you what they are.\n\nYou can click and drag these tutorial boxes around to see behind them.',
+          text: 'Welcome to WordFish! Every puzzle is a little web of linked words. Some words are missing, and the links help tell you what they are.\n\nYou can click and drag these tutorial boxes around, or collapse them with the – button, to see behind them.',
           progress,
+          minimizable: true,
           buttons: [skip, next],
         };
       case 'hidden':
@@ -388,6 +396,7 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
           text: 'Your job is to figure out the hidden words from the given information. Firstly, each ? is one letter, so this mystery word is five letters long.',
           target: () => this.tileRect('happy'),
           progress,
+          minimizable: true,
           buttons: [skip, back, next],
         };
       case 'tile':
@@ -395,13 +404,15 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
           text: 'These are "word tiles". You can drag them around to see how they connect, or to move them out of the way.',
           target: () => this.tileRect('sad'),
           progress,
+          minimizable: true,
           buttons: [skip, back, next],
         };
       case 'antonym':
         return {
-          text: 'The chains show how two words relate. This one here is an antonym chain - the words connected by it are opposites.',
+          text: 'The chains show how two words relate. This one here is an antonym chain - the words connected by it are opposites. Tap any chain\s label to see exactly what it\s saying!',
           target: () => this.chainRect(this.antonymChain, 'sad', 'happy'),
           progress,
+          minimizable: true,
           buttons: [skip, back, next],
         };
       case 'isa':
@@ -409,6 +420,7 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
           text: "This chain has a direction; it means 'is a', and the arrow aims at the more specific word. So the hidden word is a kind of emotion.",
           target: () => this.chainRect(this.hypernymChain, 'emotion', 'happy'),
           progress,
+          minimizable: true,
           buttons: [skip, back, next],
         };
       case 'controls':
@@ -417,12 +429,13 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
           text: 'Up here are some useful buttons. BG hides the drifting background elements, ? lets you see every kind of link (there are 8 overall), the shuffle button rearranges your tiles, and the button in the top-left corner takes you back to the main menu.',
           target: () => this.controlsRect(),
           progress,
+          minimizable: true,
           buttons: [skip, back, next],
         };
       case 'solve':
         return {
           // Letters/?s were covered back in 'hidden' — just a quick recap of the clues here.
-          text: 'So, our hidden word is the opposite of SAD, a kind of EMOTION, and five letters long. Tap the tile and type your answer!\n\nTuck this box away with the – button any time it is in your way.',
+          text: 'So, our hidden word is the opposite of SAD, a kind of EMOTION, and five letters long. Tap the tile and type your answer!',
           target: () => this.tileRect('happy'),
           progress,
           dim: false, // let them explore the whole board freely
@@ -435,6 +448,7 @@ export class TutorialScene extends Phaser.Scene implements TileHost {
         return {
           text: this.doneText(),
           progress,
+          minimizable: true,
           buttons: [{ label: 'PLAY', primary: true, onTap: () => this.finish() }],
         };
     }

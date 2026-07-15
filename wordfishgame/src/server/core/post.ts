@@ -1,10 +1,12 @@
 import { reddit } from '@devvit/web/server';
 import type { Post } from '@devvit/web/server';
 import { utcDayNumber, utcDayLabel } from '../../shared/daily';
+import { puzzleForDifficulty } from '../../shared/dailyPuzzle';
 import {
   getCurrentDailyPostId,
   setCurrentDailyPostId,
   setDailyDay,
+  setDailyPuzzles,
 } from './dailyStore';
 import { getShareImageUrl } from './shareImage';
 
@@ -30,6 +32,12 @@ export const publishDailyPost = async (): Promise<Post> => {
 
   await setDailyDay(post.id, day);
   await setCurrentDailyPostId(post.id);
+
+  // Freeze today's easy/hard puzzles now, while the bank looks exactly like this — so a
+  // future edit/regeneration of the bank can never retroactively change what this day showed.
+  const easy = puzzleForDifficulty('easy', day);
+  const hard = puzzleForDifficulty('hard', day);
+  if (easy && hard) await setDailyPuzzles(day, { easy, hard });
 
   try {
     await post.sticky(1); // pin as the subreddit's #1 announcement
