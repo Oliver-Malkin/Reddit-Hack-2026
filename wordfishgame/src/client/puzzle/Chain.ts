@@ -58,8 +58,9 @@ type Box = { cx: number; cy: number; hx: number; hy: number };
 type Candidate = { key: string; pts: Phaser.Math.Vector2[] };
 
 /** Human-facing chip text — often clearer than the raw type name. The four directed links
- *  (see DIRECTED_LABEL) used to append a static "▸"; that is now a live compass arrow on the
- *  chip that actually points from A toward B, so the direction reads off the label itself. */
+ *  (see DIRECTED_LABEL) used to append a static "▸"; that is now a pair of live compass arrows
+ *  flanking the chip — one before, one after — that point at the words they name, so the
+ *  direction reads off the label itself. */
 const CHIP_LABEL: Record<LinkType, string> = {
   synonym: 'SYNONYM',
   antonym: 'ANTONYM',
@@ -112,8 +113,11 @@ export class Chain {
   private shapes: Phaser.GameObjects.Image[] = [];
   private baseScales: number[] = [];
   private chip: Phaser.GameObjects.Container;
-  /** Compass arrow on the chip (directed links only) — swings each frame to point at `to`. */
-  private chipArrow: Phaser.GameObjects.Graphics | null = null;
+  /** Compass arrows flanking the chip label (directed links only) — swing each frame to point
+   *  at their own tile, so the chip reads like the tooltip's sentence: before-arrow → the word
+   *  named first, after-arrow → the word named second. */
+  private chipArrowBefore: Phaser.GameObjects.Graphics | null = null;
+  private chipArrowAfter: Phaser.GameObjects.Graphics | null = null;
   /** The relationship tooltip ("SNOW is a type of WEATHER"), lazily built on first reveal. */
   private tooltip: Phaser.GameObjects.Container | null = null;
   /** True while the tooltip is held open by a tap (vs. a transient desktop hover). */
@@ -257,9 +261,13 @@ export class Chain {
   }
 
   /** Scale the label chip + shapes with the layout. `s` is the scene's tile scale; it's
-   *  clamped here so the label text stays readable even on the smallest canvases. */
+   *  clamped here so the label text stays readable even on the smallest canvases. The floor
+   *  sits below the old 0.72 so a cramped board's labels genuinely shrink with its tiles
+   *  (they used to pin near full size while everything else scaled down), but stays high
+   *  enough that the chip is still readable and comfortably tappable (it opens the
+   *  explainer tooltip). Full-size boards are unaffected. */
   setLayoutScale(s: number) {
-    const clamped = Phaser.Math.Clamp(s, 0.72, 1.1);
+    const clamped = Phaser.Math.Clamp(s, 0.6, 1.1);
     if (Math.abs(clamped - this.layoutScale) < 0.001) return;
     this.layoutScale = clamped;
     this.chip.setScale(clamped);
@@ -555,13 +563,12 @@ export class Chain {
     });
     label.setOrigin(0.5);
 
-    // Directed labels reserve a slot on the right for the compass arrow; the text nudges left
-    // so it stays centred within its own space.
+    // Directed labels reserve a slot on each side for a compass arrow; the slots are
+    // symmetric so the text itself stays centred with no nudge needed.
     const arrowSlot = directed ? 22 : 0;
-    const w = label.width + 24 + arrowSlot;
+    const w = label.width + 24 + arrowSlot * 2;
     const h = CHIP_H;
     this.chipHalfW = w / 2;
-    label.setX(-arrowSlot / 2);
 
     const g = scene.add.graphics();
     g.fillStyle(PALETTE.ink, 0.16); // offset shadow
@@ -574,20 +581,29 @@ export class Chain {
     const children: Phaser.GameObjects.GameObject[] = [g, label];
     if (directed) {
       // A little arrowhead + shaft, drawn pointing +x and centred on its own origin so it can
-      // spin freely; update() rotates it to aim from the chip toward `to`.
-      const arrow = scene.add.graphics();
-      arrow.fillStyle(PALETTE.ink, 1);
-      arrow.beginPath();
-      arrow.moveTo(5, 0);
-      arrow.lineTo(-3, -4.2);
-      arrow.lineTo(-3, 4.2);
-      arrow.closePath();
-      arrow.fillPath();
-      arrow.lineStyle(2, PALETTE.ink, 1);
-      arrow.lineBetween(-5.5, 0, -1.5, 0);
-      arrow.setPosition(w / 2 - 13, 0);
-      this.chipArrow = arrow;
-      children.push(arrow);
+      // spin freely; update() rotates each to aim from the chip toward its own tile.
+      const drawArrow = () => {
+        const arrow = scene.add.graphics();
+        arrow.fillStyle(PALETTE.ink, 1);
+        arrow.beginPath();
+        arrow.moveTo(5, 0);
+        arrow.lineTo(-3, -4.2);
+        arrow.lineTo(-3, 4.2);
+        arrow.closePath();
+        arrow.fillPath();
+        arrow.lineStyle(2, PALETTE.ink, 1);
+        arrow.lineBetween(-5.5, 0, -1.5, 0);
+        return arrow;
+      };
+      const before = drawArrow();
+      before.setPosition(-w / 2 + 13, 0);
+      this.chipArrowBefore = before;
+      children.push(before);
+
+      const after = drawArrow();
+      after.setPosition(w / 2 - 13, 0);
+      this.chipArrowAfter = after;
+      children.push(after);
     }
 
     const c = scene.add.container(0, 0, children).setDepth(4);
@@ -839,11 +855,20 @@ export class Chain {
     this.chipAlpha += (Phaser.Math.Clamp((this.targetArc - 50) / 55, 0, 1) - this.chipAlpha) * alphaK;
     this.chip.setAlpha(this.chipAlpha);
 
-    // Compass arrow: swing it to aim from the chip toward `to`, so "A is a B" reads straight
-    // off the label. Subtract the chip's own gentle rock so it points true in world space.
-    if (this.chipArrow) {
-      const ang = Math.atan2(this.tileB.y - this.chip.y, this.tileB.x - this.chip.x);
-      this.chipArrow.rotation = ang - this.chip.rotation;
+    // Compass arrows: the before-arrow swings to aim at whichever tile the label's sentence
+    // names first, the after-arrow at whichever it names second — so the chip reads like the
+    // tooltip with a word implicitly on each side. For most directed types that's tileA then
+    // tileB ("A is part of B", "letters of A appear inside B", "A becomes B") — but hypernym's
+    // sentence is written the other way round ("B is a type of A", see tooltipText), so its
+    // arrows are swapped: TISSUE [← IS A →] SKIN. Subtract the chip's own gentle rock so each
+    // arrow points true in world space.
+    if (this.chipArrowBefore && this.chipArrowAfter) {
+      const first = this.type === 'hypernym' ? this.tileB : this.tileA;
+      const second = this.type === 'hypernym' ? this.tileA : this.tileB;
+      const angBefore = Math.atan2(first.y - this.chip.y, first.x - this.chip.x);
+      const angAfter = Math.atan2(second.y - this.chip.y, second.x - this.chip.x);
+      this.chipArrowBefore.rotation = angBefore - this.chip.rotation;
+      this.chipArrowAfter.rotation = angAfter - this.chip.rotation;
     }
 
     // Keep an open tooltip glued to the chip; auto-dismiss a tapped one, and drop it entirely

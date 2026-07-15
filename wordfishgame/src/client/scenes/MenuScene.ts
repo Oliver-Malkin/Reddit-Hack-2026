@@ -7,13 +7,20 @@ import { buildTitle, pickTitleStyle } from '../puzzle/titleStyles';
 import type { TitleStyle } from '../puzzle/titleStyles';
 import type { Difficulty, Puzzle } from '../puzzle/types';
 import { openPuzzleEditor, showPuzzleEditor } from '../puzzle/editor/PuzzleEditor';
-import { getBootPuzzle, getBootDailyDay } from '../puzzle/remote';
+import {
+  getBootPuzzle,
+  getBootDailyDay,
+  getBootIsOwnPuzzle,
+  deleteOwnPuzzle,
+  navigateToPost,
+} from '../puzzle/remote';
 import type { CustomPuzzle } from '../puzzle/remote';
+import { ConfirmPopup } from '../puzzle/ConfirmPopup';
 import { utcDayLabel } from '../../shared/daily';
 import type { BackgroundScene } from './BackgroundScene';
 import { slideCameraIn, transitionToPage, jumpToPage, isTransitioning } from './pageTransition';
 import type { PageEnterData } from './pageTransition';
-import { UserStreak } from '../../shared/api';
+import type { UserStreak } from '../../shared/api';
 
 const MARGIN = 16;
 /** The three small accent dots under the tagline — a quiet Memphis divider. */
@@ -47,6 +54,18 @@ export class MenuScene extends Phaser.Scene {
   // When this post is a user-created puzzle, the menu becomes that puzzle's intro splash
   // (title + author + Play) instead of the daily menu. Resolved once at boot.
   private customPuzzle: CustomPuzzle | null = getBootPuzzle();
+
+  // The player's daily-solve streak, fetched once from the server (see fetchStreak) and cached
+  // so every later render — resize, return to menu — draws from this instead of refetching.
+  // null means "not resolved yet" (still loading, or logged out / fetch failed): the badge slot
+  // stays empty. 0 means resolved-but-no-active-streak; >0 is the run length.
+  private streak: number | null = null;
+  private streakRequested = false;
+  // The streak badge lives in a fixed-height slot so the async value landing never shifts the
+  // menu below it. These track where to (re)draw it, and the current badge object for in-place
+  // replacement when the fetch resolves after the first render.
+  private streakCenter = { x: 0, y: 0 };
+  private streakBadge: Phaser.GameObjects.Container | null = null;
 
   constructor() {
     super('MenuScene');
@@ -117,84 +136,18 @@ export class MenuScene extends Phaser.Scene {
       dots.fillCircle(cx + (i - 1) * 18, y, 4);
     });
     this.root.add(dots);
-    y += 28; // space between dots and streak
+    y += 24; // space between the accent dots and the streak badge
 
-    // to-do
-    //const streakEmojis = ["🐟", "🐠", "🦐", "🐡", "🦀", "🦑", "🦞", "🐙", "🦈"];
-    // check if user has a streak and show number of days
-    //if(true) {
-      // actual streak value
-      
-    //} 
-    /*else if (false) {
-      // no streak yet :(
-    } else {
-      // log in to make a streak
-    }
-    */
-/*
-    private async getStreak(): Promise<string | null> {
-    try {
-      const response = await fetch('/api/fetch_streak');
-
-      if (!response.ok) {
-        return null // no streak found
-      }
-
-      const data = await response.json() as UserStreak;
-
-      const streak = data.streak
-
-      if (streak === "0") {
-        return null
-      }
-      return streak
-
-    } catch (error) {
-      console.error("Failed to fetch streak", error)
-      return null
-    }
-  }*/
-
-
-    let userStreak;
-    let streakText = "";
-    void (async () => {
-      try {
-        const response = await fetch('/api/fetch_streak');
-
-        if (!response.ok) {
-          userStreak = null // no streak found
-          return
-        }
-
-        const data = (await response.json()) as UserStreak;
-        const streak = data.streak
-
-        if (streak == "0") {
-          userStreak = null
-        }
-        userStreak = streak
-
-      } catch (error) {
-        console.error("Failed to fetch streak", error)
-        userStreak = null
-      }
-
-      if (userStreak === null) {
-        streakText = "YOU DONT HAVE A STREAK YET!"
-      } else {
-        streakText = `CURRENT STREAK ${userStreak} DAYS`
-      }
-    })();
-
-    //const userStreak = this.getStreak()
-    
-
-    
-    const streak = this.text(cx, y, streakText, Phaser.Math.Clamp(Math.round(W * 0.026), 12, 17), 'normal', '#f5b727');
-    streak.setLetterSpacing(3);
-    y += streak.height + 12;
+    // ---- Streak badge ----
+    // A fixed-height slot so the (async) streak value landing later never nudges the buttons
+    // below. drawStreakBadge fills it from the cached value; fetchStreak kicks the one-time
+    // load and patches the badge in place when it resolves.
+    const streakSlotH = 30;
+    this.streakCenter = { x: cx, y: y + streakSlotH / 2 };
+    this.streakBadge = null; // the previous one was destroyed by root.removeAll above
+    this.drawStreakBadge();
+    this.fetchStreak();
+    y += streakSlotH + 14;
 
     // ---- Lower group (daily header + difficulty + tutorial), vertically centred in the
     // space beneath the title so it stays balanced on tall and short canvases alike. ----
@@ -279,6 +232,116 @@ export class MenuScene extends Phaser.Scene {
   }
 
   /**
+   * Draw the streak badge into its reserved slot from the cached `this.streak`, replacing any
+   * badge already there. A Memphis pill (offset shadow + thick ink border) that matches the
+   * menu buttons: a warm yellow "N-DAY STREAK" once the run is going, or a quiet white nudge to
+   * start one. While the value is still loading (streak === null) the slot is left empty.
+   *
+   * `animate` springs the badge in — used when the fetch resolves after the first render, so it
+   * pops in rather than appearing abruptly; a plain resize rebuild draws it instantly.
+   */
+  private drawStreakBadge(animate = false) {
+    this.streakBadge?.destroy();
+    this.streakBadge = null;
+    if (this.streak === null) return;
+
+    const { x, y } = this.streakCenter;
+    const active = this.streak > 0;
+    // Emoji is deliberately avoided — it renders on-canvas only where a colour-emoji font
+    // happens to be installed, which isn't guaranteed across Reddit's webviews. A small drawn
+    // flame carries the "streak" idea reliably instead (see below); the copy stays plain text.
+    const label = active
+      ? `${this.streak}-DAY STREAK`
+      : 'START A STREAK TODAY';
+
+    const badge = this.add.container(x, y);
+    const text = this.add.text(0, 0, label, {
+      fontFamily: UI_FONT,
+      fontSize: '14px',
+      fontStyle: '900',
+      color: active ? '#1c1c1c' : '#8a8a8a',
+    });
+    text.setOrigin(0.5).setLetterSpacing(1);
+
+    // A little Memphis flame sits to the left of the text when the streak is live — a drawn
+    // glyph (two overlapping teardrops) so it always renders, unlike an emoji.
+    const flameW = active ? 16 : 0;
+    const flameGap = active ? 6 : 0;
+    const padX = 16;
+    const padY = 7;
+    const contentW = Math.round(text.width) + flameW + flameGap;
+    const w = contentW + padX * 2;
+    const h = Math.round(text.height) + padY * 2;
+    const rad = h / 2;
+
+    const pill = this.add.graphics();
+    pill.fillStyle(PALETTE.ink, 0.16);
+    pill.fillRoundedRect(-w / 2 + 3, -h / 2 + 4, w, h, rad); // offset shadow
+    pill.fillStyle(active ? PALETTE.yellow : 0xffffff, 1);
+    pill.fillRoundedRect(-w / 2, -h / 2, w, h, rad);
+    pill.lineStyle(3, PALETTE.ink, 1);
+    pill.strokeRoundedRect(-w / 2, -h / 2, w, h, rad);
+
+    // Left-align the flame + text as a group inside the pill.
+    const contentLeft = -contentW / 2;
+    badge.add(pill);
+    if (active) {
+      const flame = this.drawFlame(contentLeft + flameW / 2, 0);
+      badge.add(flame);
+      text.setPosition(contentLeft + flameW + flameGap + Math.round(text.width) / 2, 0);
+    } else {
+      text.setPosition(0, 0);
+    }
+    badge.add(text);
+    this.root.add(badge);
+    this.streakBadge = badge;
+
+    if (animate) {
+      badge.setScale(0.6).setAlpha(0);
+      this.tweens.add({ targets: badge, scale: 1, alpha: 1, duration: 360, ease: 'Back.easeOut' });
+    }
+  }
+
+  /** A small Memphis flame (red teardrop with a warm inner highlight), drawn from primitives
+   *  so it renders everywhere an emoji might not. Centred on (x, y) in its parent container. */
+  private drawFlame(x: number, y: number): Phaser.GameObjects.Graphics {
+    const g = this.add.graphics();
+    g.setPosition(x, y);
+    g.fillStyle(PALETTE.red, 1);
+    g.fillCircle(0, 3, 5);
+    g.fillTriangle(-5, 3, 5, 3, 0, -9);
+    g.fillStyle(0xfff2c4, 1); // cream inner flame for a hint of depth on the yellow pill
+    g.fillCircle(0, 4, 2.4);
+    g.fillTriangle(-2.4, 4, 2.4, 4, 0, -2);
+    return g;
+  }
+
+  /**
+   * Fetch the player's streak once and cache it. The `streakRequested` guard makes every later
+   * render (resize / return to menu) a no-op, so the menu draws from the cached value rather
+   * than hitting the server each time. When the value lands, patch the badge in place — but
+   * only if the daily menu is still the live page (not navigated away, asleep, or turned into a
+   * community-puzzle intro, none of which have a streak slot).
+   */
+  private fetchStreak() {
+    if (this.streakRequested) return;
+    this.streakRequested = true;
+    void (async () => {
+      try {
+        const response = await fetch('/api/fetch_streak');
+        if (!response.ok) return; // e.g. logged out (no userId) — leave the badge hidden
+        const data = (await response.json()) as UserStreak;
+        this.streak = data.streak;
+      } catch (error) {
+        console.error('Failed to fetch streak', error);
+        return;
+      }
+      if (this.customPuzzle || !this.scene.isActive()) return;
+      this.drawStreakBadge(true);
+    })();
+  }
+
+  /**
    * The intro splash for a user-created puzzle post: the WordFish brand, a "COMMUNITY PUZZLE"
    * tag, the puzzle's title, its author (u/name), then PLAY straight into the board plus a
    * HOW TO PLAY for first-timers. No daily menu — this post IS one puzzle.
@@ -331,7 +394,15 @@ export class MenuScene extends Phaser.Scene {
 
     const author = this.text(cx, 0, `by u/${custom.author}`, Phaser.Math.Clamp(Math.round(W * 0.03), 13, 18), '700', '#2b2d6e');
 
-    const groupH = puzzleTitle.height + 10 + author.height + 24 + btnH + gapBtn + tutH;
+    // Only the puzzle's own creator sees this (server-checked — see puzzle/remote's
+    // getBootIsOwnPuzzle), tucked below the main buttons as a small, deliberately
+    // low-key link so it's never mistaken for part of the normal play flow.
+    const showDelete = getBootIsOwnPuzzle();
+    const deleteGap = showDelete ? 16 : 0;
+    const deleteSize = Phaser.Math.Clamp(Math.round(W * 0.024), 11, 13);
+
+    const groupH =
+      puzzleTitle.height + 10 + author.height + 24 + btnH + gapBtn + tutH + deleteGap + deleteSize;
     const groupTop = y + Math.max(0, (H - y - MARGIN - groupH) / 2);
     let gy = groupTop;
 
@@ -359,11 +430,20 @@ export class MenuScene extends Phaser.Scene {
       textColor: '#1c1c1c',
       onTap: () => this.openTutorial(),
     });
+    gy += tutH;
 
     this.buttons = [play, tutorial];
     this.root.add(this.buttons);
     // Same guard as render(): no live buttons under an open editor overlay.
     if (this.editorOpen) for (const b of this.buttons) b.setEnabled(false);
+
+    if (showDelete) {
+      gy += deleteGap;
+      const deleteLink = this.text(cx, gy + deleteSize / 2, 'DELETE MY PUZZLE', deleteSize, '900', '#c23b3b');
+      deleteLink.setLetterSpacing(1);
+      deleteLink.setInteractive({ useHandCursor: true });
+      deleteLink.on('pointerdown', () => this.confirmDeletePuzzle());
+    }
 
     // Clean-mode toggle, shared with the puzzle, in the top-right corner.
     const r = 20;
@@ -441,6 +521,34 @@ export class MenuScene extends Phaser.Scene {
     const data: Record<string, unknown> = { puzzle };
     if (c) data.customMeta = { title: c.title, author: c.author, url: c.url };
     this.openPage('PuzzleScene', data, () => this.sfx.drop());
+  }
+
+  /** "Delete my puzzle": confirm first (irreversible — it's a real Reddit post going away),
+   *  then hand off to the server (which re-checks ownership) and leave for the subreddit,
+   *  since this post won't exist to come back to. */
+  private confirmDeletePuzzle() {
+    if (this.editorOpen || this.transitioning || isTransitioning()) return;
+    this.sfx.tap();
+    new ConfirmPopup(this, {
+      message: "Delete this puzzle? It removes the Reddit post for good — this can't be undone.",
+      confirmLabel: 'DELETE',
+      onConfirm: () => void this.performDeletePuzzle(),
+      onClose: () => {},
+    });
+  }
+
+  private async performDeletePuzzle() {
+    const result = await deleteOwnPuzzle();
+    if (result.ok) {
+      await navigateToPost(result.subredditUrl);
+      return;
+    }
+    new ConfirmPopup(this, {
+      message: result.message,
+      confirmLabel: 'OK',
+      onConfirm: () => {},
+      onClose: () => {},
+    });
   }
 
   /** Hand off to another page (puzzle / tutorial): sweep this menu off to the left while the

@@ -3,7 +3,7 @@
  *  rather than throwing — the game stays fully playable offline. */
 
 import type { Puzzle } from './types';
-import type { InitResponse, PublishPuzzleResponse } from '../../shared/api';
+import type { DeletePuzzleResponse, InitResponse, PublishPuzzleResponse } from '../../shared/api';
 
 /** A custom puzzle attached to the current post, if this post is a user-created one. */
 export type CustomPuzzle = { puzzle: Puzzle; title: string; author: string; url: string };
@@ -16,6 +16,27 @@ let bootDailyDay: number | null = null;
 /** The frozen UTC day for this daily post, or null. Valid after boot (see primeBootPuzzle). */
 export function getBootDailyDay(): number | null {
   return bootDailyDay;
+}
+
+// That day's FROZEN easy/hard puzzles (see server/core/dailyStore), captured from /api/init at
+// boot. Null on a custom-puzzle post, offline, or (very briefly, historically) a daily whose
+// freeze hasn't been backfilled yet — the client then falls back to recomputing from the live
+// bank (see puzzles.puzzleForDifficulty), which is only wrong if the bank has since changed.
+let bootDailyPuzzles: { easy: Puzzle; hard: Puzzle } | null = null;
+
+/** This daily post's frozen easy/hard puzzles, or null. Valid after boot. */
+export function getBootDailyPuzzles(): { easy: Puzzle; hard: Puzzle } | null {
+  return bootDailyPuzzles;
+}
+
+// Whether the requesting user is this community puzzle's own creator (server-checked — see
+// routes/api.ts). Always false on the daily post. Valid after boot (see primeBootPuzzle).
+let bootIsOwnPuzzle = false;
+
+/** True when this post is a community puzzle created by the current user, so the menu can
+ *  offer a "delete my puzzle" control. Valid after boot. */
+export function getBootIsOwnPuzzle(): boolean {
+  return bootIsOwnPuzzle;
 }
 
 /** Fetch /api/init, aborting (and returning null) after `timeoutMs` rather than hanging
@@ -32,6 +53,8 @@ export async function fetchCustomPuzzle(timeoutMs = 4000): Promise<CustomPuzzle 
     if (!res.ok) return null;
     const data = (await res.json()) as Partial<InitResponse>;
     if (typeof data?.dailyDay === 'number') bootDailyDay = data.dailyDay;
+    if (data?.dailyPuzzles) bootDailyPuzzles = data.dailyPuzzles;
+    bootIsOwnPuzzle = data?.isOwnPuzzle === true;
     if (data && data.puzzle) {
       return {
         puzzle: data.puzzle,
@@ -138,6 +161,31 @@ export async function publishPuzzle(title: string, puzzle: Puzzle): Promise<Publ
       ok: false,
       message: 'No connection to Reddit. Publishing works once deployed — use Preview to test.',
     };
+  }
+}
+
+export type DeleteResult =
+  | { ok: true; subredditUrl: string }
+  | { ok: false; message: string };
+
+/** Delete this post's own community puzzle. Server-side re-checks that the requester is really
+ *  its creator (see routes/api.ts) — this is not the only gate. On success the caller should
+ *  navigate away, since this post is now gone. */
+export async function deleteOwnPuzzle(): Promise<DeleteResult> {
+  try {
+    const res = await fetch('/api/puzzles/delete', { method: 'POST' });
+    const data = (await res.json().catch(() => null)) as
+      | DeletePuzzleResponse
+      | { status: 'error'; message: string }
+      | null;
+    if (res.ok && data && 'subredditUrl' in data) {
+      return { ok: true, subredditUrl: data.subredditUrl };
+    }
+    const message =
+      data && 'message' in data && data.message ? data.message : 'Could not delete the puzzle.';
+    return { ok: false, message };
+  } catch {
+    return { ok: false, message: 'No connection to Reddit. Try again once deployed.' };
   }
 }
 

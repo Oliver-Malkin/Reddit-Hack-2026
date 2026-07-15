@@ -26,7 +26,15 @@ const config: Phaser.Types.Core.GameConfig = {
   input: { windowEvents: false },
   scale: {
     mode: Phaser.Scale.RESIZE,
-    autoCenter: Phaser.Scale.CENTER_BOTH,
+    // NO_CENTER — never CENTER_BOTH. In RESIZE mode the canvas is sized to fill the parent, so
+    // there is nothing to center; but Phaser still runs updateCenter() on every resize, and it
+    // computes the margin from the canvas's *current* bounding rect against the *new* parent
+    // size. On a grow-after-shrink the canvas hasn't reflowed to its new size yet, so the stale
+    // (smaller) bounds vs the larger parent yields a positive margin — e.g. (1200−500)/2 = 350px
+    // left — that shoves the whole canvas sideways (black gutter on one side, everything looks
+    // oversized because a large world is shown offset). Centering a fill-the-parent canvas is
+    // meaningless anyway, so disabling it removes the bug outright.
+    autoCenter: Phaser.Scale.NO_CENTER,
     width: 1024,
     height: 768,
   },
@@ -74,10 +82,17 @@ function enableCrispText(dpr: number) {
  */
 function enableHiDpiRendering(game: Game, dpr: number) {
   if (dpr <= 1) return;
+  // WebGL only. Enlarging the buffer to css×dpr is a cheap GPU fragment fill on WebGL, but on the
+  // Canvas 2D fallback the CPU rasterises every pixel — and this device measures ~13ns/px, so
+  // just covering a 2.38M-px screen at 2× costs ~30ms/frame (~27 FPS) with no GPU to hide it.
+  // Rendering at 1× on Canvas keeps 60 FPS; text stays crisp regardless (baked at DPR via
+  // enableCrispText), so only the ambient background art softens. CanvasRenderer also exposes a
+  // resize() method, so the duck-typed guard below does NOT exclude it — gate on type explicitly.
+  if (game.renderer.type !== Phaser.WEBGL) return;
   const scale = game.scale;
   const renderer = game.renderer as Phaser.Renderer.WebGL.WebGLRenderer;
   const canvas = game.canvas;
-  if (!renderer || typeof renderer.resize !== 'function') return; // headless / canvas fallback
+  if (!renderer || typeof renderer.resize !== 'function') return; // headless
 
   const applyCamera = (cam: Phaser.Cameras.Scene2D.BaseCamera) => {
     cam.setSize(canvas.width, canvas.height); // cover the full device-pixel buffer (no clip)

@@ -1,13 +1,18 @@
 import { Hono } from 'hono';
 import { context, redis, reddit } from '@devvit/web/server';
 import type {
+  DecrementResponse,
+  DeletePuzzleResponse,
+  IncrementResponse,
   InitResponse,
   PublishPuzzleResponse,
   UserStreak,
 } from '../../shared/api';
 import { createPuzzlePost } from '../core/post';
-import { cleanTitle, loadPuzzle, savePuzzle, validatePuzzle } from '../core/puzzleStore';
-import { getDailyDay } from '../core/dailyStore';
+import { cleanTitle, deletePuzzle, loadPuzzle, savePuzzle, validatePuzzle } from '../core/puzzleStore';
+import { getDailyDay, getDailyPuzzles, setDailyPuzzles } from '../core/dailyStore';
+import { puzzleForDifficulty } from '../../shared/dailyPuzzle';
+import { utcDayNumber } from '../../shared/daily';
 import { findBlockedTerm } from '../../shared/moderation';
 
 type ErrorResponse = {
@@ -44,6 +49,16 @@ api.get('/init', async (c) => {
       getDailyDay(postId),
     ]);
 
+    // Present on a daily post: that day's FROZEN easy/hard puzzles, so a future bank
+    // edit/regeneration can't retroactively change what this day showed.
+    const dailyPuzzles = dailyDay != null ? await resolveDailyPuzzles(dailyDay) : null;
+
+    // Only a community puzzle post needs to know who's asking (for the "delete my puzzle"
+    // control) — this extra round-trip is skipped entirely on the much more common daily post.
+    const isOwnPuzzle = stored
+      ? ((await reddit.getCurrentUsername()) ?? null) === stored.author
+      : false;
+
     return c.json<InitResponse>({
       type: 'init',
       postId: postId,
@@ -56,10 +71,12 @@ api.get('/init', async (c) => {
             puzzleTitle: stored.title,
             puzzleAuthor: stored.author,
             postUrl: `https://reddit.com/r/${context.subredditName}/comments/${postId}`,
+            isOwnPuzzle,
           }
         : {}),
       // Present on a daily post: which day's board to show (frozen at creation).
       ...(dailyDay != null ? { dailyDay } : {}),
+      ...(dailyPuzzles ? { dailyPuzzles } : {}),
     });
   } catch (error) {
     console.error(`API Init Error for post ${postId}:`, error);
@@ -74,99 +91,88 @@ api.get('/init', async (c) => {
   }
 });
 
-/*
+// A player's daily-solve streak. Two Redis keys per user:
+//   user:<id>:streak    — the current run length (integer, stored as a string)
+//   user:<id>:streakDay — the UTC day number (see shared/daily) of their last counted solve
+// Days are UTC day numbers so the streak rolls over at the same instant as the daily puzzle for
+// everyone, rather than depending on each player's local midnight.
+function streakKeys(userId: string) {
+  return { count: `user:${userId}:streak`, day: `user:${userId}:streakDay` } as const;
+}
 
-post increment_streak - done
+/** The streak that is actually live for `today`: the stored run if the last solve was today or
+ *  yesterday, otherwise 0 — a gap of two or more days means the run has lapsed. */
+function liveStreak(storedCount: number, lastDay: number | null, today: number): number {
+  if (lastDay === null) return 0;
+  return lastDay === today || lastDay === today - 1 ? storedCount : 0;
+}
 
-check is there a user - done
-
-check the date user:username:streak_date & user:username:streak - done
-
-increment by 1 if today - done
-
-set todays date to today - done
-
-*/
-
+/** Record a solve for the current user and return their (possibly extended) streak. Called by
+ *  the win screen. Solving again on a day already counted leaves the run unchanged, so replays
+ *  never inflate — or reset — the streak. */
 api.post('/increment_streak', async (c) => {
   const user = context.userId;
-
   if (!user) {
-    return c.json<ErrorResponse>(
-      {
-        status: "error",
-        message: "no user",
-      },
-      400
-    )
+    return c.json<ErrorResponse>({ status: 'error', message: 'No logged-in user.' }, 400);
   }
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const oneDay = 24 * 60 * 60 * 1000;
-  const rawDate = await redis.get(`user:${user}:streak_date`);
-  let streak = 1
+  const keys = streakKeys(user);
+  const today = utcDayNumber();
+  const [rawCount, rawDay] = await Promise.all([redis.get(keys.count), redis.get(keys.day)]);
+  const lastDay = rawDay != null ? parseInt(rawDay, 10) : null;
+  const prevCount = rawCount ? parseInt(rawCount, 10) : 0;
 
-  if (rawDate) { // is there a date?
-    const userDate = new Date(rawDate);
-    const dateDiff = today.getTime() - userDate.getTime();
-    if (dateDiff === oneDay) {
-      streak = await redis.incrBy(`user:${user}:streak`, 1);
-      console.log("increment user streak");
-    } else {
-      await redis.set(`user:${user}:streak`, "1");
-      console.log("set user streak to 1");
-    }
-  } else { // no date, must start a streak
-    await redis.set(`user:${user}:streak`, "1");
-    console.log("no streak exists, set user streak to 1");
+  let streak: number;
+  if (lastDay === today) {
+    streak = prevCount || 1; // already counted today — a replay doesn't extend the run
+  } else if (lastDay === today - 1) {
+    streak = prevCount + 1; // solved yesterday too → extend
+  } else {
+    streak = 1; // first solve ever, or the previous run lapsed → start fresh
   }
 
-  // set users date to todays date
-  await redis.set(`user:${user}:streak_date`, today.toISOString());
+  await Promise.all([
+    redis.set(keys.count, streak.toString()),
+    redis.set(keys.day, today.toString()),
+  ]);
 
-  return c.json<UserStreak>({
-    type: "streak",
-    streak: streak.toString()
-  });
+  return c.json<UserStreak>({ type: 'streak', streak });
+});
 
-})
-
+/** Read the current user's live streak for the menu — 0 when they have never solved or the run
+ *  has lapsed (see liveStreak). Read-only: it never mutates the stored streak. */
 api.get('/fetch_streak', async (c) => {
   const user = context.userId;
-
   if (!user) {
-    return c.json<ErrorResponse>(
-      {
-        status: "error",
-        message: "no user",
-      },
-      400
-    )
+    return c.json<ErrorResponse>({ status: 'error', message: 'No logged-in user.' }, 400);
   }
 
-  const streak = await redis.get(`user:${user}:streak`)
+  const keys = streakKeys(user);
+  const [rawCount, rawDay] = await Promise.all([redis.get(keys.count), redis.get(keys.day)]);
+  const streak = liveStreak(
+    rawCount ? parseInt(rawCount, 10) : 0,
+    rawDay != null ? parseInt(rawDay, 10) : null,
+    utcDayNumber()
+  );
 
-  if (!streak) {
-    return c.json<UserStreak>(
-      {
-        type: "streak",
-        streak: "0"
-      }
-    )
-  } else {
-    return c.json<UserStreak>(
-      {
-        type: "streak",
-        streak: streak
-      }
-    )
-  }
+  return c.json<UserStreak>({ type: 'streak', streak });
+});
 
-})
+/** The frozen easy/hard puzzles for a daily's UTC day. Legacy days that predate the freeze
+ *  (or where creation-time freezing failed) get backfilled here — locking them in from now on
+ *  using whatever the bank looks like at this moment, so at least no FURTHER bank edit can
+ *  move them. */
+async function resolveDailyPuzzles(day: number) {
+  const existing = await getDailyPuzzles(day);
+  if (existing) return existing;
+  const easy = puzzleForDifficulty('easy', day);
+  const hard = puzzleForDifficulty('hard', day);
+  if (!easy || !hard) return null;
+  const puzzles = { easy, hard };
+  await setDailyPuzzles(day, puzzles);
+  return puzzles;
+}
 
-/*
-from the phaser template
 api.post('/increment', async (c) => {
   const { postId } = context;
   if (!postId) {
@@ -206,7 +212,6 @@ api.post('/decrement', async (c) => {
     type: 'decrement',
   });
 });
-*/
 
 /**
  * Publish a user-created puzzle as its own Reddit post. Validates the payload, creates the
@@ -259,6 +264,51 @@ api.post('/puzzles/publish', async (c) => {
     console.error('Error publishing puzzle:', error);
     return c.json<ErrorResponse>(
       { status: 'error', message: 'Could not publish the puzzle. Try again.' },
+      500
+    );
+  }
+});
+
+/**
+ * Delete a community puzzle's own post. Only the puzzle's original creator may do this —
+ * checked against the stored `author` (see puzzleStore.savePuzzle) by the requesting user's
+ * actual Reddit username, never a client-supplied claim. The post itself is created by the
+ * app account (see core/post.createPuzzlePost), so deleting it is a plain app-level
+ * `post.delete()` rather than anything requiring extra Reddit permissions.
+ */
+api.post('/puzzles/delete', async (c) => {
+  const { postId } = context;
+  if (!postId) {
+    return c.json<ErrorResponse>({ status: 'error', message: 'postId is required' }, 400);
+  }
+
+  const stored = await loadPuzzle(postId);
+  if (!stored) {
+    return c.json<ErrorResponse>({ status: 'error', message: 'No puzzle found for this post.' }, 404);
+  }
+
+  const username = await reddit.getCurrentUsername();
+  if (!username || username !== stored.author) {
+    return c.json<ErrorResponse>(
+      { status: 'error', message: 'Only the puzzle\'s creator can delete it.' },
+      403
+    );
+  }
+
+  try {
+    const post = await reddit.getPostById(postId as `t3_${string}`);
+    await post.delete();
+    await deletePuzzle(postId);
+
+    return c.json<DeletePuzzleResponse>({
+      type: 'delete',
+      status: 'ok',
+      subredditUrl: `https://reddit.com/r/${context.subredditName}`,
+    });
+  } catch (error) {
+    console.error(`Error deleting puzzle post ${postId}:`, error);
+    return c.json<ErrorResponse>(
+      { status: 'error', message: 'Could not delete the puzzle. Try again.' },
       500
     );
   }
